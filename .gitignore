@@ -39,6 +39,7 @@ data
 !.envrc
 vendor/
 reference/
+/.scratch/
 result
 result-*
 /src/c/mirage/adapter/build/
