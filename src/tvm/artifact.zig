@@ -1,418 +1,176 @@
-//! Stable cache and loaded-artifact ownership for tuned TVM matmuls.
-//!
-//! MetaSchedule emits candidate shared libraries and timing records. This layer
-//!  selects the fastest candidate, maintains stable cache entries, and loads
-//!  cached TVM runtime modules.
+//! Storage and loading for tuned TVM modules.
 
 const std = @import("std");
-const api = @import("../c/tvm/api.zig");
-const RuntimeModule = @import("../c/tvm/runtime.zig").RuntimeModule;
-const Value = api.Value;
+const tvm_runtime = @import("../c/tvm/runtime.zig");
+const RuntimeModule = tvm_runtime.RuntimeModule;
 const TargetKind = @import("config.zig").TargetKind;
 const Cache = @import("../cache.zig").Cache;
+const DType = @import("../dtype.zig").DType;
+const export_mod = @import("export.zig");
+const Linker = @import("../toolchain/linker.zig").Linker;
 
-const log = std.log.scoped(.@"zg/tvm_loader");
+const log = std.log.scoped(.@"zg/tvm_artifact");
 
 /// Loaded TVM runtime module for one cached artifact.
 pub const LoadedArtifact = struct {
     module: RuntimeModule,
-    main_func: Value,
+    main_func: tvm_runtime.Function,
 
+    /// Release the loaded function and module.
     pub fn deinit(self: *LoadedArtifact) void {
-        self.main_func.decref();
+        self.main_func.deinit();
         self.module.deinit();
         self.* = undefined;
     }
 
     /// Invoke the tuned main function with the given arguments.
-    pub fn invoke(self: LoadedArtifact, allocator: std.mem.Allocator, args: []const Value) !void {
-        const func_handle = self.main_func.as_object() orelse return error.TvmCallFailed;
-        var result = try api.call_handle(allocator, func_handle, args);
-        defer result.decref();
+    pub fn invoke(
+        self: LoadedArtifact,
+        allocator: std.mem.Allocator,
+        tensors: []const tvm_runtime.Tensor,
+    ) !void {
+        try self.main_func.call(allocator, tensors);
     }
 };
 
-/// Cache entry for a tuned kernel artifact.
-pub const CacheEntry = struct {
-    key: []const u8,
-    target_kind: TargetKind,
-    artifact_path: []const u8,
-    best_time_us: f64,
-};
+const cache_key_format_version: u32 = 1;
 
-const current_schema_version: u32 = 1;
-
-const CacheIndex = struct {
-    schema_version: u32 = current_schema_version,
-    file_version: u32 = 0,
-    entries: []CacheEntry = &.{},
-};
-
-/// Fixed-size buffer for a Wyhash-derived cache key.
+/// Lowercase hexadecimal BLAKE3 cache key.
 pub const CacheKey = struct {
-    buf: [16]u8 = undefined,
-    len: u8 = 0,
+    buf: [std.crypto.hash.Blake3.digest_length * 2]u8,
 
+    /// Return the key bytes.
     pub fn slice(self: *const CacheKey) []const u8 {
-        return self.buf[0..self.len];
+        return &self.buf;
     }
 };
 
-/// Compute the deterministic cache key for an f32 matmul shape and target.
-pub fn matmul_cache_key(target: []const u8, m: i64, n: i64, k: i64) CacheKey {
-    var input_buf: [512]u8 = undefined;
-    const key_str = std.fmt.bufPrint(&input_buf, "matmul:f32:{s}:{d}:{d}:{d}", .{
-        target, m, n, k,
-    }) catch unreachable;
-    const hash = std.hash.Wyhash.hash(0, key_str);
-    var result: CacheKey = .{};
-    const formatted = std.fmt.bufPrint(&result.buf, "{x}", .{hash}) catch unreachable;
-    result.len = @intCast(formatted.len);
-    return result;
+/// Compute the cache key for a matmul signature and target.
+pub fn matmul_cache_key(
+    /// Cache fingerprint for compiler inputs that affect generated artifacts.
+    compiler_fingerprint: []const u8,
+    target: []const u8,
+    dtype: DType,
+    m: i64,
+    n: i64,
+    k: i64,
+) CacheKey {
+    var hashing = std.crypto.hash.Blake3.init(.{});
+    hashing.update("zigrad.tvm.matmul");
+    hash_int(&hashing, u32, cache_key_format_version);
+    hash_bytes(&hashing, compiler_fingerprint);
+    hash_bytes(&hashing, target);
+    hash_bytes(&hashing, dtype.name());
+    hash_int(&hashing, i64, m);
+    hash_int(&hashing, i64, n);
+    hash_int(&hashing, i64, k);
+
+    var digest: [std.crypto.hash.Blake3.digest_length]u8 = undefined;
+    hashing.final(&digest);
+    return .{ .buf = std.fmt.bytesToHex(digest, .lower) };
+}
+
+fn hash_bytes(hashing: *std.crypto.hash.Blake3, bytes: []const u8) void {
+    hash_int(hashing, u64, @intCast(bytes.len));
+    hashing.update(bytes);
+}
+
+fn hash_int(hashing: *std.crypto.hash.Blake3, comptime Int: type, value: Int) void {
+    var encoded: [@sizeOf(Int)]u8 = undefined;
+    std.mem.writeInt(Int, &encoded, value, .little);
+    hashing.update(&encoded);
 }
 
 test matmul_cache_key {
-    const sm_80 = matmul_cache_key("cuda -arch=sm_80", 128, 128, 128);
-    const sm_89 = matmul_cache_key("cuda -arch=sm_89", 128, 128, 128);
+    const sm_80 = matmul_cache_key("compiler-a", "cuda -arch=sm_80", .f32, 128, 128, 128);
+    const sm_89 = matmul_cache_key("compiler-a", "cuda -arch=sm_89", .f32, 128, 128, 128);
+    const float16 = matmul_cache_key("compiler-a", "cuda -arch=sm_89", .f16, 128, 128, 128);
+    const compiler_b = matmul_cache_key("compiler-b", "cuda -arch=sm_89", .f32, 128, 128, 128);
     try std.testing.expect(!std.mem.eql(u8, sm_80.slice(), sm_89.slice()));
+    try std.testing.expect(!std.mem.eql(u8, float16.slice(), sm_89.slice()));
+    try std.testing.expect(!std.mem.eql(u8, compiler_b.slice(), sm_89.slice()));
 }
 
-fn cache_lookup(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    base_cache: Cache,
-    key: []const u8,
-    target_kind: TargetKind,
-) !?CacheEntry {
-    var index = try read_cache_index(io, allocator, base_cache);
-    defer deinit_cache_index(allocator, &index);
+const artifact_name = "kernel.so";
+const pending_artifact_name = "kernel.pending.so";
 
-    for (index.entries) |entry| {
-        if (entry.target_kind != target_kind) continue;
-        if (std.mem.eql(u8, entry.key, key)) {
-            return try clone_cache_entry(allocator, entry);
-        }
-    }
-    return null;
-}
-
-fn cache_update(
+/// Export and atomically publish a compiled module in `work_cache`.
+pub fn publish(
+    /// Compiled module to export.
+    module: RuntimeModule,
+    /// I/O context used to export and publish the module.
     io: std.Io,
+    /// Allocator used by TVM and the linker.
     allocator: std.mem.Allocator,
-    base_cache: Cache,
-    entry: CacheEntry,
+    /// Cache directory dedicated to one workload and target.
+    work_cache: *const Cache,
+    /// Selects host-only or CUDA host-device export.
+    target: TargetKind,
+    /// Linker used to produce the ELF shared library.
+    linker: Linker,
 ) !void {
-    var index = try read_cache_index(io, allocator, base_cache);
-    defer deinit_cache_index(allocator, &index);
-
-    for (index.entries) |*existing| {
-        if (existing.target_kind == entry.target_kind and std.mem.eql(u8, existing.key, entry.key)) {
-            const replacement = try clone_cache_entry(allocator, entry);
-            free_cache_entry(allocator, existing.*);
-            existing.* = replacement;
-            return try write_cache_index(io, allocator, base_cache, &index);
-        }
-    }
-
-    try append_cache_entry(allocator, &index, entry);
-    return try write_cache_index(io, allocator, base_cache, &index);
-}
-
-fn clone_cache_entry(
-    allocator: std.mem.Allocator,
-    entry: CacheEntry,
-) !CacheEntry {
-    const key = try allocator.dupe(u8, entry.key);
-    errdefer allocator.free(key);
-    return .{
-        .key = key,
-        .target_kind = entry.target_kind,
-        .artifact_path = try allocator.dupe(u8, entry.artifact_path),
-        .best_time_us = entry.best_time_us,
-    };
-}
-
-fn append_cache_entry(
-    allocator: std.mem.Allocator,
-    index: *CacheIndex,
-    entry: CacheEntry,
-) !void {
-    const owned = try clone_cache_entry(allocator, entry);
-    errdefer free_cache_entry(allocator, owned);
-
-    const old_len = index.entries.len;
-    index.entries = try allocator.realloc(index.entries, old_len + 1);
-    index.entries[old_len] = owned;
-}
-
-fn free_cache_entry(allocator: std.mem.Allocator, entry: CacheEntry) void {
-    allocator.free(entry.key);
-    allocator.free(entry.artifact_path);
-}
-
-fn best_candidate_from_records(io: std.Io, allocator: std.mem.Allocator, work_cache: Cache) !RankedCandidate {
-    const candidates = try find_ranked_candidates(io, allocator, work_cache);
-    defer allocator.free(candidates);
-    return candidates[0];
-}
-
-fn stable_artifact_path(work_cache: Cache, key: []const u8) !Cache {
-    var name_buf: [256]u8 = undefined;
-    const name = std.fmt.bufPrint(&name_buf, "kernel_{s}.so", .{key}) catch return error.NameTooLong;
-    return try work_cache.join(name);
-}
-
-pub const UpdateResult = struct {
-    best_candidate: usize,
-    best_time_us: f64,
-};
-
-pub fn update_cache_from_work_dir(
-    io: std.Io,
-    allocator: std.mem.Allocator,
-    base_cache: Cache,
-    work_cache: Cache,
-    key: []const u8,
-    target_kind: TargetKind,
-) !UpdateResult {
-    const best = try best_candidate_from_records(io, allocator, work_cache);
-
-    var candidate_name_buf: [64]u8 = undefined;
-    const candidate_name = std.fmt.bufPrint(&candidate_name_buf, "candidate_{d}.so", .{best.idx}) catch unreachable;
-    const candidate = try work_cache.join(candidate_name);
-
-    const stable = try stable_artifact_path(work_cache, key);
-
+    var pending = try work_cache.join(pending_artifact_name);
+    const pending_path = pending.pathZ();
+    const published = try work_cache.join(artifact_name);
     const cwd = std.Io.Dir.cwd();
-    cwd.copyFile(candidate.path(), cwd, stable.path(), io, .{ .replace = true }) catch |err| {
-        return err;
+    defer cwd.deleteFile(io, pending.path()) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.warn(
+            "failed to remove pending artifact: {s}",
+            .{@errorName(err)},
+        ),
     };
 
-    const entry = CacheEntry{
-        .key = key,
-        .target_kind = target_kind,
-        .artifact_path = stable.path(),
-        .best_time_us = best.time_secs * 1e6,
-    };
-    try cache_update(io, allocator, base_cache, entry);
-
-    return .{
-        .best_candidate = best.idx,
-        .best_time_us = best.time_secs * 1e6,
-    };
+    try export_mod.export_shared(
+        module,
+        io,
+        allocator,
+        pending_path,
+        target,
+        linker,
+    );
+    try cwd.rename(pending.path(), cwd, published.path(), io);
 }
 
+/// Load the published module from `work_cache`, or return `null` when absent.
 pub fn load_cached(
+    /// I/O context used to inspect and load the artifact.
     io: std.Io,
+    /// Allocator used by TVM packed calls.
     allocator: std.mem.Allocator,
-    base_cache: Cache,
-    key: []const u8,
-    target_kind: TargetKind,
+    /// Cache directory dedicated to one workload and target.
+    work_cache: *const Cache,
 ) !?LoadedArtifact {
-    const cached = try cache_lookup(io, allocator, base_cache, key, target_kind) orelse
-        return null;
-    defer {
-        allocator.free(cached.key);
-        allocator.free(cached.artifact_path);
-    }
-
-    std.Io.Dir.cwd().access(io, cached.artifact_path, .{}) catch return null;
-    const path_z = try std.fmt.allocPrintSentinel(allocator, "{s}", .{cached.artifact_path}, 0);
-    defer allocator.free(path_z);
+    var path = try work_cache.join(artifact_name);
+    std.Io.Dir.cwd().access(io, path.path(), .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    const path_z = path.pathZ();
     var module = try RuntimeModule.load_from_file(allocator, path_z);
     errdefer module.deinit();
     const main_func = try module.get_function(allocator, "main", true);
-
-    return .{
-        .module = module,
-        .main_func = main_func,
-    };
+    return .{ .module = module, .main_func = main_func };
 }
 
-/// Read the stable cached artifact bytes for one key and target.
+/// Read the cached artifact bytes for one workload and target.
 pub fn read_cached_bytes(
+    /// I/O context used to read the artifact.
     io: std.Io,
+    /// Allocator used for the returned bytes.
     allocator: std.mem.Allocator,
-    base_cache: Cache,
-    key: []const u8,
-    target_kind: TargetKind,
+    /// Cache directory dedicated to one workload and target.
+    work_cache: *const Cache,
 ) !?[]u8 {
-    const cached = try cache_lookup(io, allocator, base_cache, key, target_kind) orelse
-        return null;
-    defer {
-        allocator.free(cached.key);
-        allocator.free(cached.artifact_path);
-    }
-
-    std.Io.Dir.cwd().access(io, cached.artifact_path, .{}) catch return null;
+    const path = try work_cache.join(artifact_name);
+    std.Io.Dir.cwd().access(io, path.path(), .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
     return try std.Io.Dir.cwd().readFileAlloc(
         io,
-        cached.artifact_path,
+        path.path(),
         allocator,
         .limited(100 * 1024 * 1024),
     );
-}
-
-const RankedCandidate = struct {
-    idx: usize,
-    time_secs: f64,
-};
-
-/// Parse tuning_record.json and return candidates ranked by speed (fastest first).
-///
-/// Only includes candidates whose .so file exists on disk.
-fn find_ranked_candidates(io: std.Io, allocator: std.mem.Allocator, work_cache: Cache) ![]RankedCandidate {
-    const record_file = try work_cache.join("tuning_record.json");
-    const record_path = record_file.path();
-
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, record_path, allocator, .unlimited) catch |err| {
-        log.err("failed to read tuning records at {s}: {s}", .{ record_path, @errorName(err) });
-        return error.NoTuningRecords;
-    };
-    defer allocator.free(contents);
-
-    if (contents.len == 0) {
-        log.err("empty tuning records file: {s}", .{record_path});
-        return error.NoTuningRecords;
-    }
-    const bytes_read = contents.len;
-
-    var candidates = std.ArrayList(RankedCandidate).empty;
-    defer candidates.deinit(allocator);
-    var line_num: usize = 0;
-
-    var lines = std.mem.splitScalar(u8, contents[0..bytes_read], '\n');
-    while (lines.next()) |line| {
-        if (line.len == 0) continue;
-
-        const run_secs = parse_run_secs(line);
-
-        if (run_secs) |t| {
-            var name_buf: [64]u8 = undefined;
-            const name = std.fmt.bufPrint(&name_buf, "candidate_{d}.so", .{line_num}) catch unreachable;
-            const candidate = work_cache.join(name) catch {
-                line_num += 1;
-                continue;
-            };
-
-            std.Io.Dir.cwd().access(io, candidate.path(), .{}) catch {
-                log.debug("skipping candidate {d}: .so not found", .{line_num});
-                line_num += 1;
-                continue;
-            };
-
-            try candidates.append(allocator, .{ .idx = line_num, .time_secs = t });
-        } else {
-            log.warn("could not parse run_secs from record {d}", .{line_num});
-        }
-
-        line_num += 1;
-    }
-
-    if (candidates.items.len == 0) {
-        log.err("no valid tuning records found in {s}", .{record_path});
-        return error.NoTuningRecords;
-    }
-
-    const items = try candidates.toOwnedSlice(allocator);
-    std.mem.sort(RankedCandidate, items, {}, struct {
-        fn lessThan(_: void, a: RankedCandidate, b: RankedCandidate) bool {
-            return a.time_secs < b.time_secs;
-        }
-    }.lessThan);
-
-    log.info("found {d} candidates, fastest: {d} ({d:.2} us)", .{
-        items.len, items[0].idx, items[0].time_secs * 1e6,
-    });
-
-    return items;
-}
-
-/// Extract run_secs from a tuning_record.json line via pattern matching.
-///
-/// Scans backwards from the end for the run_secs field, which sits between the
-///  decisions array and the target object: `...decisions], [<run_secs>], {target...`.
-///  Handles float (`1.85e-05`) and integer (`10000000000`) representations.
-fn parse_run_secs(line: []const u8) ?f64 {
-    var i: usize = line.len;
-    while (i > 4) {
-        i -= 1;
-        if (line[i] == '{' and line[i - 1] == ',' and line[i - 2] == ']') {
-            var j = i - 3;
-            while (j > 0 and line[j] != '[') j -= 1;
-            if (j > 0 and line[j] == '[') {
-                const num_str = line[j + 1 .. i - 2];
-                return std.fmt.parseFloat(f64, num_str) catch null;
-            }
-        }
-    }
-    return null;
-}
-
-fn read_cache_index(io: std.Io, allocator: std.mem.Allocator, base_cache: Cache) !CacheIndex {
-    const idx_file = try base_cache.join("index.json");
-    const path = idx_file.path();
-
-    const contents = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch |err| switch (err) {
-        error.FileNotFound => return .{ .entries = try allocator.alloc(CacheEntry, 0) },
-        else => return err,
-    };
-    defer allocator.free(contents);
-
-    if (contents.len == 0) return .{ .entries = try allocator.alloc(CacheEntry, 0) };
-
-    const parsed = try std.json.parseFromSlice(CacheIndex, allocator, contents, .{
-        .ignore_unknown_fields = true,
-    });
-    defer parsed.deinit();
-
-    if (parsed.value.schema_version != current_schema_version) {
-        log.warn("index.json schema_version {d}, expected {d}", .{
-            parsed.value.schema_version, current_schema_version,
-        });
-    }
-
-    const entries = try allocator.alloc(CacheEntry, parsed.value.entries.len);
-    var initialized: usize = 0;
-    errdefer {
-        for (entries[0..initialized]) |entry| free_cache_entry(allocator, entry);
-        allocator.free(entries);
-    }
-    for (parsed.value.entries, 0..) |entry, i| {
-        entries[i] = try clone_cache_entry(allocator, entry);
-        initialized += 1;
-    }
-    return .{
-        .schema_version = parsed.value.schema_version,
-        .file_version = parsed.value.file_version,
-        .entries = entries,
-    };
-}
-
-fn write_cache_index(io: std.Io, allocator: std.mem.Allocator, base_cache: Cache, index: *CacheIndex) !void {
-    const idx_file = try base_cache.join("index.json");
-    const path = idx_file.path();
-
-    const bytes = try std.json.Stringify.valueAlloc(allocator, index.*, .{});
-    defer allocator.free(bytes);
-
-    const old_bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)) catch null;
-    if (old_bytes) |old| {
-        defer allocator.free(old);
-        if (std.mem.eql(u8, old, bytes)) return;
-    }
-
-    index.file_version += 1;
-    const final_bytes = try std.json.Stringify.valueAlloc(allocator, index.*, .{});
-    defer allocator.free(final_bytes);
-
-    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
-    defer file.close(io);
-    try file.writeStreamingAll(io, final_bytes);
-}
-
-fn deinit_cache_index(allocator: std.mem.Allocator, index: *CacheIndex) void {
-    for (index.entries) |entry| free_cache_entry(allocator, entry);
-    allocator.free(index.entries);
-    index.* = undefined;
 }

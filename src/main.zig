@@ -167,7 +167,7 @@ fn dispatch_tvm(env: zg.RuntimeEnv, gpa: std.mem.Allocator, command: cli.TvmComm
             _ = try zg.tvm.tune_matmul(
                 env.io,
                 gpa,
-                cache,
+                &cache,
                 .{
                     .m = @intCast(shape.m),
                     .n = @intCast(shape.n),
@@ -186,6 +186,9 @@ fn dispatch_tvm(env: zg.RuntimeEnv, gpa: std.mem.Allocator, command: cli.TvmComm
             const shape = try parse_shape(opts.shape orelse "128x128x128");
             const target_kind: zg.tvm.TargetKind = if (opts.cuda or opts.gpu) .cuda else .cpu;
             const cache = try zg.Cache.init(env.io, env.environ, .{});
+            const compiler_fingerprint = try zg.tvm.CompileConfig.resolve_compiler_fingerprint(
+                env.environ,
+            );
             return try run_tvm_demo(
                 env.io,
                 gpa,
@@ -193,7 +196,8 @@ fn dispatch_tvm(env: zg.RuntimeEnv, gpa: std.mem.Allocator, command: cli.TvmComm
                 @intCast(shape.n),
                 @intCast(shape.k),
                 target_kind,
-                cache,
+                compiler_fingerprint,
+                &cache,
             );
         },
     }
@@ -544,7 +548,8 @@ fn run_tvm_demo(
     n: i64,
     k: i64,
     target_kind: if (build_options.has_tvm) zg.tvm.TargetKind else void,
-    artifact_cache: zg.Cache,
+    compiler_fingerprint: []const u8,
+    artifact_cache: *const zg.Cache,
 ) !void {
     const shape: zg.tvm.MatmulShape = .{ .m = m, .n = n, .k = k };
     const selected_device = zg.Device{
@@ -555,6 +560,7 @@ fn run_tvm_demo(
         gpa,
         artifact_cache,
         shape,
+        compiler_fingerprint,
         target_kind,
         selected_device,
     ) orelse return error.NoTuningRecords;

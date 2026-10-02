@@ -34,7 +34,7 @@ pub const Harness = struct {
     xla_gpu_ctx: ?backend_adapter.XlaContext = null,
     iree_ctx: ?backend_adapter.IreeContext = null,
 
-    // Separate maps make the TVM target part of the cache identity.
+    // Separate maps keep CPU and CUDA modules under different keys.
     tvm_cpu_cache: std.AutoHashMap(Shape, *zg.tvm.CachedMatmul),
     tvm_gpu_cache: std.AutoHashMap(Shape, *zg.tvm.CachedMatmul),
 
@@ -133,7 +133,7 @@ pub const Harness = struct {
         const result = try zg.tvm.tune_matmul(
             self.io,
             self.allocator,
-            self.cache,
+            &self.cache,
             tvm_shape(shape),
             .{
                 .compile = compile_config,
@@ -146,8 +146,8 @@ pub const Harness = struct {
             },
         );
 
-        log.info("tuned: {any} ({t}), best candidate {d} ({d:.2} us)", .{
-            shape, target_kind, result.best_candidate, result.best_time_us,
+        log.info("tuned: {any} ({t}), {d:.2} us over {d} samples", .{
+            shape, target_kind, result.best_time_us, result.sample_count,
         });
     }
 
@@ -320,11 +320,15 @@ pub const Harness = struct {
                 .cpu => .cpu,
                 .gpu => .cuda,
             };
+            const compiler_fingerprint = try zg.tvm.CompileConfig.resolve_compiler_fingerprint(
+                self.environ,
+            );
             const module = try zg.tvm.CachedMatmul.load(
                 self.io,
                 self.allocator,
-                self.cache,
+                &self.cache,
                 tvm_shape(shape),
+                compiler_fingerprint,
                 target_kind,
                 .{
                     .platform = if (target_kind == .cuda) .cuda else .cpu,

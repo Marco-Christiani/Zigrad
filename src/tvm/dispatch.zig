@@ -4,9 +4,7 @@
 const std = @import("std");
 const kernel = @import("../kernel.zig");
 const dlpack = @import("../c/dlpack.zig");
-const tvm_api = @import("../c/tvm/api.zig");
 const tvm_runtime = @import("../c/tvm/runtime.zig");
-const tvm_c = @import("../c/tvm/c.zig");
 const integration_runtime = @import("runtime.zig");
 const Cache = @import("../cache.zig").Cache;
 const TypedPtr = @import("../utils/rtti.zig").TypedPtr;
@@ -15,24 +13,25 @@ const log = std.log.scoped(.@"zg/tvm_dispatch");
 
 const TvmDispatchEntry = struct {
     module: tvm_runtime.RuntimeModule,
-    main_func: tvm_api.Value,
+    main_func: tvm_runtime.Function,
 
     fn deinit(self: *TvmDispatchEntry) void {
-        self.main_func.decref();
+        self.main_func.deinit();
         self.module.deinit();
         self.* = undefined;
     }
 };
 
-/// Owns TVM runtime modules loaded for kernel dispatch.
+/// Caches TVM runtime modules used for kernel dispatch.
 ///
 /// A single instance is shared by its provider's artifacts. Dispatch is
 ///  single-threaded until the kernel-provider contract supplies synchronization.
 pub const TvmDispatchState = struct {
     io: std.Io,
-    cache: std.AutoHashMap(u64, TvmDispatchEntry),
+    cache: std.AutoHashMap(ArtifactHash, TvmDispatchEntry),
     artifact_cache: Cache,
 
+    /// Initialize an empty dispatch cache.
     pub fn init(
         io: std.Io,
         allocator: std.mem.Allocator,
@@ -45,12 +44,14 @@ pub const TvmDispatchState = struct {
         };
     }
 
+    /// Release every loaded dispatch entry.
     pub fn deinit(self: *TvmDispatchState) void {
         var it = self.cache.iterator();
         while (it.next()) |entry| {
             entry.value_ptr.deinit();
         }
         self.cache.deinit();
+        self.* = undefined;
     }
 
     /// Prepare one compiled artifact for execution.
@@ -77,12 +78,12 @@ pub const TvmDispatchState = struct {
     fn prepare_impl(self: *TvmDispatchState, artifact_data: []const u8) !void {
         try integration_runtime.ensure_loaded(.runtime);
 
-        const artifact_hash = std.hash.Wyhash.hash(0, artifact_data);
+        const artifact_hash = hash_artifact(artifact_data);
         if (self.cache.contains(artifact_hash)) return;
 
         var loaded = try load_dispatch_entry(
             self.io,
-            self.artifact_cache,
+            &self.artifact_cache,
             artifact_hash,
             artifact_data,
         );
@@ -110,7 +111,7 @@ pub const TvmDispatchState = struct {
         _: []const u8,
         ctx: kernel.DispatchContext,
     ) !void {
-        const artifact_hash = std.hash.Wyhash.hash(0, artifact_data);
+        const artifact_hash = hash_artifact(artifact_data);
         const entry = self.cache.get(artifact_hash) orelse
             return error.ArtifactNotPrepared;
 
@@ -127,10 +128,9 @@ pub const TvmDispatchState = struct {
         else
             return error.UnsupportedDevice;
 
-        var tvm_args: [16]tvm_api.Value = undefined;
         var tensors: [16]tvm_runtime.Tensor = undefined;
         const total = ctx.inputs.len + ctx.outputs.len;
-        if (total > 16) return error.TvmCallFailed;
+        if (total > tensors.len) return error.TooManyArguments;
 
         var initialized: usize = 0;
         defer for (tensors[0..initialized]) |*tensor| tensor.deinit();
@@ -138,22 +138,14 @@ pub const TvmDispatchState = struct {
         for (ctx.inputs, 0..) |buf, i| {
             tensors[i] = try tensor_from_buffer_desc(buf, device_type, ctx.device.ordinal);
             initialized += 1;
-            tvm_args[i] = tensors[i].as_value();
         }
         for (ctx.outputs, 0..) |buf, i| {
             const idx = ctx.inputs.len + i;
             tensors[idx] = try tensor_from_buffer_desc(buf, device_type, ctx.device.ordinal);
             initialized += 1;
-            tvm_args[idx] = tensors[idx].as_value();
         }
 
-        const func_handle = entry.main_func.as_object() orelse return error.TvmCallFailed;
-        var result = try tvm_api.call_handle(
-            std.heap.c_allocator,
-            func_handle,
-            tvm_args[0..total],
-        );
-        defer result.decref();
+        try entry.main_func.call(std.heap.c_allocator, tensors[0..total]);
     }
 };
 
@@ -167,7 +159,8 @@ fn tensor_from_buffer_desc(buf: kernel.BufferDesc, device_type: dlpack.DeviceTyp
         .strides = null,
         .byte_offset = 0,
     };
-    const managed = try dlpack.ManagedTensor.heap_borrowing(std.heap.c_allocator, dl_tensor);
+    const managed = try dlpack.ManagedTensor.heap_borrowing(dl_tensor);
+    errdefer managed.deleter.?(managed);
     return try tvm_runtime.Tensor.from_dlpack(managed);
 }
 
@@ -188,29 +181,23 @@ fn kernel_dtype_to_dlpack(dtype: kernel.DType) dlpack.DataType {
 }
 
 fn configure_cuda_stream(stream_ptr: *anyopaque, device_id: i32) !void {
-    var result = try tvm_api.call_global(std.heap.c_allocator, "runtime.TVMSetStream", &.{
-        tvm_api.Value.int(2), // kDLCUDA
-        tvm_api.Value.int(device_id),
-        opaque_ptr_value(stream_ptr),
-    });
-    defer result.decref();
-}
-
-fn opaque_ptr_value(ptr: *anyopaque) tvm_api.Value {
-    var v = std.mem.zeroes(tvm_c.TVMFFIAny);
-    v.type_index = tvm_c.kTVMFFIOpaquePtr;
-    v.unnamed_1.v_int64 = @bitCast(@intFromPtr(ptr));
-    return .{ .raw = v };
+    try tvm_runtime.set_stream(
+        std.heap.c_allocator,
+        .cuda,
+        device_id,
+        stream_ptr,
+    );
 }
 
 fn load_dispatch_entry(
     io: std.Io,
-    artifact_cache: Cache,
-    artifact_hash: u64,
+    artifact_cache: *const Cache,
+    artifact_hash: ArtifactHash,
     artifact_data: []const u8,
 ) !TvmDispatchEntry {
     var name_buf: [128]u8 = undefined;
-    const filename = try std.fmt.bufPrint(&name_buf, "{x}.so", .{artifact_hash});
+    const digest_hex = std.fmt.bytesToHex(artifact_hash, .lower);
+    const filename = try std.fmt.bufPrint(&name_buf, "{s}.so", .{&digest_hex});
     const tvm_cache = try artifact_cache.subdir(io, "tvm", .{});
     var dispatch_cache = try tvm_cache.subdir(io, "dispatch", .{});
     var resolved = try dispatch_cache.join(filename);
@@ -230,4 +217,12 @@ fn load_dispatch_entry(
         .module = module,
         .main_func = main_func,
     };
+}
+
+const ArtifactHash = [std.crypto.hash.Blake3.digest_length]u8;
+
+fn hash_artifact(artifact_data: []const u8) ArtifactHash {
+    var digest: ArtifactHash = undefined;
+    std.crypto.hash.Blake3.hash(artifact_data, &digest, .{});
+    return digest;
 }

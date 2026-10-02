@@ -39,7 +39,34 @@ pub const DataType = extern struct {
     pub const f16_ = DataType{ .code = .float, .bits = 16, .lanes = 1 };
     pub const i64_ = DataType{ .code = .int, .bits = 64, .lanes = 1 };
     pub const i32_ = DataType{ .code = .int, .bits = 32, .lanes = 1 };
+
+    /// Return the storage bytes occupied by one element.
+    pub fn size_in_bytes(self: DataType) error{InvalidDataType}!usize {
+        if (self.bits == 0) return error.InvalidDataType;
+        if (self.lanes == 0) return error.InvalidDataType;
+        const bit_count = @as(u32, self.bits) * @as(u32, self.lanes);
+        return @intCast((bit_count + 7) / 8);
+    }
 };
+
+/// Return the contiguous storage size for `shape` and `dtype`.
+pub fn byte_count(
+    /// Tensor dimensions. Negative dimensions are invalid.
+    shape: []const i64,
+    /// Element representation used by the tensor.
+    dtype: DataType,
+) error{ InvalidDataType, InvalidShape, SizeOverflow }!usize {
+    var element_count: usize = 1;
+    for (shape) |dimension| {
+        if (dimension < 0) return error.InvalidShape;
+        const dimension_size = std.math.cast(usize, dimension) orelse
+            return error.SizeOverflow;
+        element_count = std.math.mul(usize, element_count, dimension_size) catch
+            return error.SizeOverflow;
+    }
+    return std.math.mul(usize, element_count, try dtype.size_in_bytes()) catch
+        return error.SizeOverflow;
+}
 
 pub const Tensor = extern struct {
     data: ?*anyopaque,
@@ -55,6 +82,7 @@ pub const Tensor = extern struct {
     /// The returned tensor references `data` and `shape` by pointer so
     ///  both must outlive the tensor.
     pub fn init_contiguous(comptime T: type, data: []T, shape: []i64) Tensor {
+        std.debug.assert(shape.len <= std.math.maxInt(i32));
         return .{
             .data = @ptrCast(data.ptr),
             .device = .{ .device_type = .cpu, .device_id = 0 },
@@ -83,11 +111,14 @@ pub const ManagedTensor = extern struct {
 
     /// Heap-allocate a ManagedTensor wrapping external memory.
     ///
-    /// The shape is duped to the heap so TVM can safely reference it after the
-    /// caller's stack frame returns. TVM calls the deleter on refcount drop,
-    /// which frees both the shape and the ManagedTensor itself.
-    pub fn heap_borrowing(allocator: std.mem.Allocator, dl_tensor: Tensor) !*ManagedTensor {
-        const heap_shape = try allocator.dupe(i64, dl_tensor.shape[0..@intCast(dl_tensor.ndim)]);
+    /// The shape is copied so a DLPack consumer can retain the tensor after the
+    ///  caller's stack frame returns. The consumer calls the deleter, which
+    ///  frees the shape and managed-tensor storage.
+    pub fn heap_borrowing(dl_tensor: Tensor) !*ManagedTensor {
+        const allocator = std.heap.c_allocator;
+        if (dl_tensor.ndim < 0) return error.InvalidShape;
+        const rank: usize = @intCast(dl_tensor.ndim);
+        const heap_shape = try allocator.dupe(i64, dl_tensor.shape[0..rank]);
         errdefer allocator.free(heap_shape);
         const managed = try allocator.create(ManagedTensor);
         managed.* = .{
@@ -101,6 +132,7 @@ pub const ManagedTensor = extern struct {
 
     fn heap_deleter(self: ?*ManagedTensor) callconv(.c) void {
         const m = self orelse return;
+        std.debug.assert(m.dl_tensor.ndim >= 0);
         const ndim: usize = @intCast(m.dl_tensor.ndim);
         std.heap.c_allocator.free(m.dl_tensor.shape[0..ndim]);
         std.heap.c_allocator.destroy(m);
@@ -117,6 +149,16 @@ fn dtype_of(comptime T: type) DataType {
         i32 => DataType.i32_,
         else => @compileError("unsupported DLPack element type"),
     };
+}
+
+test byte_count {
+    try std.testing.expectEqual(@as(usize, 24), try byte_count(&.{ 2, 3 }, .f32_));
+    try std.testing.expectEqual(@as(usize, 0), try byte_count(&.{ 2, 0 }, .f16_));
+    try std.testing.expectError(error.InvalidShape, byte_count(&.{ -1, 2 }, .f32_));
+    try std.testing.expectError(
+        error.InvalidDataType,
+        byte_count(&.{2}, .{ .code = .float, .bits = 0, .lanes = 1 }),
+    );
 }
 
 comptime {

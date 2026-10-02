@@ -1,32 +1,35 @@
 //! MetaSchedule autotuning for TVM.
 //!
 //! Runs TVM's MetaSchedule search for a given IRModule and target.
-//! Uses a random cost model with evolutionary search.
 //! Builder and runner callbacks receive provider state through TVM's
-//!  userdata pointer.
+//!  userdata pointer. Schedule timings rank implementations within TVM. The
+//!  Zigrad tuning resolver compares the selected provider implementation with
+//!  the unreplaced callable.
 const std = @import("std");
 const device = @import("../device.zig");
 const tir = @import("../c/tvm/tir.zig");
 const runtime = @import("../c/tvm/runtime.zig");
 const ms = @import("../c/tvm/meta_schedule.zig");
 const compile = @import("../c/tvm/compile.zig");
-const api = @import("../c/tvm/api.zig");
-const c = @import("../c/tvm/c.zig");
+const ffi = @import("../c/tvm/ffi.zig");
+const container = @import("../c/tvm/container.zig");
 const dlpack = @import("../c/dlpack.zig");
+const DType = @import("../dtype.zig").DType;
 const Cache = @import("../cache.zig").Cache;
 const build_options = @import("build_options");
 const config = @import("config.zig");
+const cuda_intrinsics = @import("cuda_intrinsics.zig");
 const integration_runtime = @import("runtime.zig");
 const export_mod = @import("export.zig");
 const Linker = @import("../toolchain/linker.zig").Linker;
-const Value = api.Value;
-const Array = api.Array;
+const Value = ffi.Value;
+const OwnedValue = ffi.OwnedValue;
+const Array = container.Array;
 const IRModule = tir.IRModule;
 const RuntimeModule = runtime.RuntimeModule;
 const Target = tir.Target;
 const Tensor = runtime.Tensor;
 const TargetKind = @import("config.zig").TargetKind;
-const MetaSchedule = ms.MetaSchedule;
 const nvrtc_callback = if (build_options.has_nvrtc) @import("nvrtc_callback.zig") else struct {};
 
 const log = std.log.scoped(.@"zg/tvm_tune");
@@ -42,18 +45,35 @@ pub const TuneOpts = struct {
     gpu_arch: ?[]const u8,
 
     /// Directory containing this workload's tuning state and candidates.
-    work_cache: Cache,
+    work_cache: *const Cache,
 
     /// Maximum measured candidates.
     max_trials: u32 = 64,
 
     /// Candidates submitted per tuning iteration.
     trials_per_iter: u32 = 16,
+
+    /// TVM timing policy applied to each compiled schedule.
+    measurement: runtime.TimeEvaluatorOptions = .{},
 };
 
-/// Persistent state for MetaSchedule callbacks.
-/// Passed as userdata to builder/runner callbacks via TVM's
-///  TVMFFIFunctionCreate self pointer.
+/// Highest-ranked schedule and its measurements.
+pub const Result = struct {
+    /// Scheduled module selected by TVM's database ranking.
+    module: IRModule,
+    /// Mean of the selected record's measurements.
+    mean_time_seconds: f64,
+    /// Number of measurements contributing to the mean.
+    sample_count: usize,
+
+    /// Release the selected scheduled module.
+    pub fn deinit(self: *Result) void {
+        self.module.deinit();
+        self.* = undefined;
+    }
+};
+
+/// State passed to MetaSchedule builder and runner callbacks.
 const TuneState = struct {
     io: std.Io,
     allocator: std.mem.Allocator,
@@ -61,20 +81,21 @@ const TuneState = struct {
     target_kind: TargetKind,
     linker: Linker,
     device_ordinal: i32,
-    work_cache: Cache,
+    candidate_cache: Cache,
     build_counter: u32 = 0,
-    /// First candidate index available for this tuning run.
-    initial_counter: u32 = 0,
-    max_trials: u32,
+    candidate_batch_max: u32,
     /// Tensor shapes for the workload (A, B, C for matmul).
     tensor_shapes: []const []const i64,
+    tensor_dtype: DType,
+    measurement: runtime.TimeEvaluatorOptions,
 };
 
-/// Run MetaSchedule and persist measured tuning records in the workload cache.
+/// Run MetaSchedule and return its highest-ranked schedule.
 ///
-/// Runs evolutionary search with a random cost model. The builder callback
-///  compiles TIR candidates to shared libraries. The runner callback loads and
-///  benchmarks them. Results are persisted in `opts.work_cache`.
+/// ReplayTrace samples schedules from TVM's target-selected design space. The
+///  builder compiles candidates to shared libraries and the runner measures
+///  them. TVM persists workloads and measurements in `opts.work_cache`. The
+///  orchestration corresponds to `python/tvm/meta_schedule/tune.py::tune_tasks`.
 pub fn tune(
     /// I/O context used by filesystem and timing operations.
     io: std.Io,
@@ -84,11 +105,19 @@ pub fn tune(
     ir_mod: IRModule,
     /// TVM compilation target.
     target: Target,
+    /// Element type shared by the matrix-multiply inputs and output.
+    tensor_dtype: DType,
     /// Input and output tensor shapes used by the runner.
     tensor_shapes: []const []const i64,
     /// Compiler, device, cache, and search limits.
     opts: TuneOpts,
-) !void {
+) !Result {
+    try validate_tuning_limits(
+        opts.max_trials,
+        opts.trials_per_iter,
+        opts.measurement,
+    );
+
     try integration_runtime.ensure_loaded(.compiler);
     const kind = opts.compile.target;
 
@@ -103,7 +132,6 @@ pub fn tune(
                 return error.MissingNvrtcArchitecture;
             };
             nvrtc_callback.register(
-                allocator,
                 nvrtc_config,
                 gpu_arch,
             ) catch |err| {
@@ -114,52 +142,63 @@ pub fn tune(
             log.err("TVM CUDA tuning requires the opt-in NVRTC integration", .{});
             return error.NvrtcDisabled;
         }
-        try load_cuda_intrinsics(io, allocator);
+        try cuda_intrinsics.ensure_registered(
+            io,
+            allocator,
+            opts.compile.cuda_intrinsics_path orelse
+                return error.MissingCudaIntrinsics,
+        );
     }
 
     const work_dir = opts.work_cache.path();
-    std.Io.Dir.cwd().createDirPath(io, work_dir) catch {};
+    try std.Io.Dir.cwd().createDirPath(io, work_dir);
 
-    try register_cpu_count(allocator);
+    // Candidate libraries serve the runner only while this invocation is live.
+    //  Schedule traces and measurements remain in TVM's database.
+    const candidate_cache = try opts.work_cache.join("candidates");
+    try std.Io.Dir.cwd().deleteTree(io, candidate_cache.path());
+    try std.Io.Dir.cwd().createDirPath(io, candidate_cache.path());
+    defer std.Io.Dir.cwd().deleteTree(io, candidate_cache.path()) catch |err| {
+        log.warn("failed to remove candidate directory: {s}", .{@errorName(err)});
+    };
 
-    const schedule_rules = try MetaSchedule.schedule_rules(allocator, kind);
-    log.debug("created ScheduleRules", .{});
+    try register_cpu_count();
 
-    const space_gen = try MetaSchedule.space_generator(allocator, schedule_rules);
+    var space_gen = try ms.SpaceGenerator.post_order_apply(allocator);
+    defer space_gen.deinit();
     log.debug("created SpaceGenerator", .{});
 
-    const search_strategy = try MetaSchedule.search_strategy(allocator, .{});
+    var search_strategy = try ms.SearchStrategy.replay_trace(allocator, .{});
+    defer search_strategy.deinit();
     log.debug("created SearchStrategy", .{});
 
-    // JSON database
     var workload = try opts.work_cache.join("workload.json");
     const workload_path = workload.pathZ();
     var record = try opts.work_cache.join("tuning_record.json");
     const record_path = record.pathZ();
 
-    const database = try MetaSchedule.json_database(allocator, workload_path, record_path);
+    var database = try ms.Database.open_json(
+        allocator,
+        workload_path,
+        record_path,
+        .{},
+    );
+    defer database.deinit();
     log.debug("created JSONDatabase", .{});
 
-    const logger_val = try make_noop_callback();
-    defer logger_val.decref();
+    var logger_value = try make_noop_callback();
+    defer logger_value.deinit();
 
-    const tune_context = try MetaSchedule.tune_context(allocator, .{
-        .ir_mod = ir_mod.as_value(),
-        .target = target.as_value(),
-        .space_gen = space_gen,
-        .search_strat = search_strategy,
+    var tune_context = try ms.TuneContext.init(allocator, .{
+        .module = ir_mod,
+        .target = target,
+        .generator = &space_gen,
+        .strategy = &search_strategy,
         .task_name = "main",
-        .logger = logger_val,
+        .logger = &logger_value,
     });
+    defer tune_context.deinit();
     log.debug("created TuneContext", .{});
-
-    // Seed build_counter from persisted state so incremental tuning
-    // doesn't overwrite previous candidates.
-    const persisted = read_tune_state(io, allocator, opts.work_cache);
-    const initial_counter = persisted.next_candidate;
-    if (initial_counter > 0) {
-        log.info("resuming from candidate {d} (found {d} existing)", .{ initial_counter, initial_counter });
-    }
 
     var state = TuneState{
         .io = io,
@@ -168,268 +207,254 @@ pub fn tune(
         .target_kind = kind,
         .linker = opts.compile.linker,
         .device_ordinal = opts.device.ordinal,
-        .work_cache = opts.work_cache,
-        .build_counter = initial_counter,
-        .initial_counter = initial_counter,
-        .max_trials = opts.max_trials,
+        .candidate_cache = candidate_cache,
+        .candidate_batch_max = opts.trials_per_iter,
         .tensor_shapes = tensor_shapes,
+        .tensor_dtype = tensor_dtype,
+        .measurement = opts.measurement,
     };
 
-    // Builder callback
-    const builder_func = try api.create_packed_func(@ptrCast(&state), build_callback, null);
-    defer builder_func.decref();
-    const builder = try MetaSchedule.py_builder(allocator, builder_func);
-    log.debug("created PyBuilder", .{});
+    var builder_func = try ffi.PackedFunction.create(@ptrCast(&state), build_callback, null);
+    defer builder_func.deinit();
+    var builder = try ms.Builder.from_callback(allocator, &builder_func);
+    defer builder.deinit();
+    log.debug("created callback builder", .{});
 
-    // Runner callback
-    const runner_func = try api.create_packed_func(@ptrCast(&state), run_callback, null);
-    defer runner_func.decref();
-    const runner = try MetaSchedule.py_runner(allocator, runner_func);
-    log.debug("created PyRunner", .{});
+    var runner_func = try ffi.PackedFunction.create(@ptrCast(&state), run_callback, null);
+    defer runner_func.deinit();
+    var runner = try ms.Runner.from_callback(allocator, &runner_func);
+    defer runner.deinit();
+    log.debug("created callback runner", .{});
 
-    // Cost model (random)
-    const cost_model = try make_random_cost_model(allocator);
-    log.debug("created PyCostModel", .{});
-
-    // Task scheduler
-    const task_scheduler = try MetaSchedule.task_scheduler(allocator, .{ .logger = logger_val });
+    var task_scheduler = try ms.TaskScheduler.gradient_based(allocator, .{
+        .logger = &logger_value,
+    });
+    defer task_scheduler.deinit();
     log.debug("created TaskScheduler", .{});
 
-    // Run tuning
     log.info("starting tuning ({d} max trials, {d} per iter)...", .{ opts.max_trials, opts.trials_per_iter });
 
-    var contexts_arr = try Array.from_values(allocator, &.{tune_context});
-    defer contexts_arr.deinit();
-    var weights_arr = try Array.from_values(allocator, &.{Value.float(1.0)});
-    defer weights_arr.deinit();
-
-    const add_to_db = try MetaSchedule.add_to_database(allocator);
-    var callbacks_arr = try Array.from_values(allocator, &.{add_to_db});
-    defer callbacks_arr.deinit();
+    var add_to_db = try ms.MeasureCallback.add_to_database(allocator);
+    defer add_to_db.deinit();
 
     const max_trials: i64 = @intCast(opts.max_trials);
-    MetaSchedule.run_tune(allocator, .{
-        .scheduler = task_scheduler,
-        .contexts = contexts_arr.as_value(),
-        .weights = weights_arr.as_value(),
-        .max_trials = max_trials,
+    task_scheduler.tune(allocator, .{
+        .contexts = &.{&tune_context},
+        .weights = &.{1.0},
         .max_trials_global = max_trials,
+        .max_trials_per_task = max_trials,
         .trials_per_iter = @intCast(opts.trials_per_iter),
-        .builder = builder,
-        .runner = runner,
-        .callbacks = callbacks_arr.as_value(),
-        .database = database,
-        .cost_model = cost_model,
+        .builder = &builder,
+        .runner = &runner,
+        .callbacks = &.{&add_to_db},
+        .database = &database,
     }) catch |err| {
         log.err("TaskSchedulerTune failed: {s}", .{@errorName(err)});
         return err;
     };
 
-    // Persist build counter so the next run continues from where we left off.
-    write_tune_state(io, allocator, opts.work_cache, .{
-        .next_candidate = @atomicLoad(u32, &state.build_counter, .seq_cst),
+    var committed_workload = try database.commit_workload(allocator, ir_mod);
+    defer committed_workload.deinit();
+    var top = try database.top_k(allocator, &committed_workload, 1);
+    defer top.deinit();
+    if (try top.len(allocator) != 1) return error.NoTuningRecords;
+
+    var best_record = try top.get(allocator, 0);
+    defer best_record.deinit();
+    const samples = try best_record.dupe_run_seconds(allocator);
+    defer allocator.free(samples);
+    var sum: f64 = 0.0;
+    for (samples) |sample| sum += sample;
+    const mean = sum / @as(f64, @floatFromInt(samples.len));
+
+    const scheduled_module = try database.query_module(
+        allocator,
+        ir_mod,
+        target,
+        "main",
+    ) orelse return error.NoTuningRecords;
+    log.info("tuning complete: {d} samples, {d:.2} us mean", .{
+        samples.len,
+        mean * 1e6,
     });
-
-    log.info("tuning complete. results: {s}", .{record_path});
+    return .{
+        .module = scheduled_module,
+        .mean_time_seconds = mean,
+        .sample_count = samples.len,
+    };
 }
-
-// Callbacks
 
 /// Builder callback: compiles TIR candidates to .so artifacts.
 fn build_callback(
     self_ptr: ?*anyopaque,
-    args: [*c]const c.TVMFFIAny,
-    num_args: i32,
-    result: [*c]c.TVMFFIAny,
-) callconv(.c) c_int {
+    args: *const ffi.CallbackArgs,
+) !ffi.CallbackOutput {
     const state: *TuneState = @ptrCast(@alignCast(self_ptr orelse {
         log.err("build_callback: null state", .{});
-        return -1;
+        return error.MissingCallbackState;
     }));
 
-    if (num_args != 1) {
-        log.err("build_callback: expected 1 arg, got {d}", .{num_args});
-        return -1;
+    if (args.len() != 1) {
+        log.err("build_callback: expected 1 arg, got {d}", .{args.len()});
+        return error.InvalidCallbackArity;
     }
 
-    build_callback_impl(state, args[0], result) catch |err| {
+    const result = build_callback_impl(state, args.get(0)) catch |err| {
         log.err("build_callback failed: {s}", .{@errorName(err)});
-        return -1;
+        return err;
     };
-    return 0;
+    return .{ .owned = result };
 }
 
-fn build_callback_impl(state: *TuneState, inputs_array_raw: c.TVMFFIAny, result: *c.TVMFFIAny) !void {
+fn build_callback_impl(
+    state: *TuneState,
+    inputs_value: Value,
+) !OwnedValue {
     const allocator = state.allocator;
 
-    var inputs = try Array.wrap(.{ .raw = inputs_array_raw });
+    var inputs = try Array.retain(inputs_value);
     defer inputs.deinit();
 
     const num_inputs = try inputs.len(allocator);
+    if (num_inputs > state.candidate_batch_max) return error.CandidateBatchTooLarge;
     log.info("building {d} candidates", .{num_inputs});
 
-    var results_list = std.ArrayList(Value).empty;
-    defer results_list.deinit(allocator);
-
-    for (0..num_inputs) |i| {
-        const input = try inputs.get(allocator, i);
-
-        // Extract mod from BuilderInput
-        const mod_val = api.get_field(input, "mod") catch {
-            try results_list.append(allocator, try make_builder_error(allocator, "failed to get mod"));
-            continue;
-        };
-
-        // Lower and compile the candidate.
-        var ir_mod = IRModule{ .handle = .{ .ptr = mod_val.as_object() orelse {
-            try results_list.append(allocator, try make_builder_error(allocator, "mod not an object"));
-            continue;
-        } }, .type_index = mod_val.raw.type_index };
-        ir_mod.handle.incref();
-
-        const compiled_module_result = compile.lower_and_compile(allocator, &ir_mod, state.target, state.target_kind);
-        var compiled_module = compiled_module_result catch {
-            try results_list.append(allocator, try make_builder_error(allocator, "compilation failed"));
-            continue;
-        };
-        defer compiled_module.deinit();
-
-        // Export to .so
-        const build_id = @atomicRmw(u32, &state.build_counter, .Add, 1, .seq_cst);
-        var name_buf: [64]u8 = undefined;
-        const name = std.fmt.bufPrint(&name_buf, "candidate_{d}.so", .{build_id}) catch unreachable;
-        var so = state.work_cache.join(name) catch {
-            try results_list.append(allocator, try make_builder_error(allocator, "path too long"));
-            continue;
-        };
-        const so_path = so.pathZ();
-
-        export_mod.export_shared(
-            compiled_module,
-            state.io,
-            allocator,
-            so_path,
-            state.target_kind,
-            state.linker,
-        ) catch |err| {
-            log.err("candidate {d} export failed: {s}", .{ build_id, @errorName(err) });
-            try results_list.append(allocator, try make_builder_error(allocator, "export failed"));
-            continue;
-        };
-
-        const br = try MetaSchedule.builder_result(allocator, so_path, null);
-        try results_list.append(allocator, br);
-        log.debug("built trial {d}/{d} (total {d}/{d})", .{
-            i + 1, num_inputs, build_id + 1, state.initial_counter + state.max_trials,
-        });
+    var results_list = std.ArrayList(OwnedValue).empty;
+    defer {
+        for (results_list.items) |*value| value.deinit();
+        results_list.deinit(allocator);
     }
 
-    var results_arr = try Array.from_values(allocator, results_list.items);
-    defer results_arr.deinit();
-    // Transfer ownership to caller via result pointer
-    results_arr.handle.incref();
-    result.* = results_arr.as_value().raw;
+    for (0..num_inputs) |i| {
+        // Build ids name temporary candidate libraries.
+        const build_id = @atomicRmw(u32, &state.build_counter, .Add, 1, .seq_cst);
+        var input = try inputs.get(allocator, i);
+        defer input.deinit();
+        const candidate = build_candidate(state, input.borrow(), build_id) catch |err| blk: {
+            log.warn("candidate {d} build failed: {s}", .{ build_id, @errorName(err) });
+            break :blk try make_builder_error(allocator, @errorName(err));
+        };
+        try results_list.append(allocator, candidate);
+        log.debug("built trial {d}/{d} (candidate {d})", .{ i + 1, num_inputs, build_id });
+    }
+
+    var results_arr = try array_from_owned(allocator, results_list.items);
+    return results_arr.take_value();
+}
+
+/// Compile one `BuilderInput` from `python/tvm/meta_schedule/builder/builder.py`.
+fn build_candidate(state: *TuneState, input_value: Value, build_id: u32) !OwnedValue {
+    const allocator = state.allocator;
+    const input = try ms.BuilderInput.from_value(input_value);
+    var ir_mod = try input.module();
+    defer ir_mod.deinit();
+
+    var compiled_module = try compile.lower_and_compile(
+        allocator,
+        &ir_mod,
+        state.target,
+        state.target_kind,
+    );
+    defer compiled_module.deinit();
+
+    var name_buffer: [64]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buffer, "candidate_{d}.so", .{build_id}) catch
+        unreachable;
+    var artifact_path = try state.candidate_cache.join(name);
+    const artifact_path_z = artifact_path.pathZ();
+    try export_mod.export_shared(
+        compiled_module,
+        state.io,
+        allocator,
+        artifact_path_z,
+        state.target_kind,
+        state.linker,
+    );
+    var build_result = try ms.BuilderResult.init(allocator, .{ .success = artifact_path_z });
+    return build_result.take_value();
 }
 
 /// Runner callback: loads and benchmarks compiled .so artifacts.
 fn run_callback(
     self_ptr: ?*anyopaque,
-    args: [*c]const c.TVMFFIAny,
-    num_args: i32,
-    result: [*c]c.TVMFFIAny,
-) callconv(.c) c_int {
+    args: *const ffi.CallbackArgs,
+) !ffi.CallbackOutput {
     const state: *TuneState = @ptrCast(@alignCast(self_ptr orelse {
         log.err("run_callback: null state", .{});
-        return -1;
+        return error.MissingCallbackState;
     }));
 
-    if (num_args != 1) {
-        log.err("run_callback: expected 1 arg, got {d}", .{num_args});
-        return -1;
+    if (args.len() != 1) {
+        log.err("run_callback: expected 1 arg, got {d}", .{args.len()});
+        return error.InvalidCallbackArity;
     }
 
-    run_callback_impl(state, args[0], result) catch |err| {
+    const result = run_callback_impl(state, args.get(0)) catch |err| {
         log.err("run_callback failed: {s}", .{@errorName(err)});
-        return -1;
+        return err;
     };
-    return 0;
+    return .{ .owned = result };
 }
 
-fn run_callback_impl(state: *TuneState, inputs_array_raw: c.TVMFFIAny, result: *c.TVMFFIAny) !void {
+fn run_callback_impl(
+    state: *TuneState,
+    inputs_value: Value,
+) !OwnedValue {
     const allocator = state.allocator;
 
-    var inputs = try Array.wrap(.{ .raw = inputs_array_raw });
+    var inputs = try Array.retain(inputs_value);
     defer inputs.deinit();
 
     const num_inputs = try inputs.len(allocator);
+    if (num_inputs > state.candidate_batch_max) return error.CandidateBatchTooLarge;
     log.info("running {d} candidates", .{num_inputs});
 
-    var results_list = std.ArrayList(Value).empty;
-    defer results_list.deinit(allocator);
-
-    for (0..num_inputs) |i| {
-        const input = try inputs.get(allocator, i);
-
-        // Get artifact_path
-        const path_val = api.get_field(input, "artifact_path") catch {
-            try results_list.append(allocator, try make_runner_error(allocator, "no artifact_path"));
-            continue;
-        };
-        var path_val_mut = path_val;
-        const artifact_path_slice = path_val_mut.as_string(allocator) catch {
-            try results_list.append(allocator, try make_runner_error(allocator, "bad path"));
-            continue;
-        };
-        defer allocator.free(artifact_path_slice);
-
-        const artifact_path = try std.fmt.allocPrintSentinel(allocator, "{s}", .{artifact_path_slice}, 0);
-        defer allocator.free(artifact_path);
-
-        // Load the candidate and resolve its entry function.
-        var loaded = RuntimeModule.load_from_file(allocator, artifact_path) catch {
-            try results_list.append(allocator, try make_runner_error(allocator, "load failed"));
-            continue;
-        };
-        defer loaded.deinit();
-
-        const func = loaded.get_function(allocator, "main", true) catch {
-            try results_list.append(allocator, try make_runner_error(allocator, "GetFunction failed"));
-            continue;
-        };
-        defer func.decref();
-        const func_handle = func.as_object() orelse {
-            try results_list.append(allocator, try make_runner_error(allocator, "null function"));
-            continue;
-        };
-
-        // Allocate tensors and benchmark
-        const run_time = benchmark_kernel(state, func_handle) catch {
-            try results_list.append(allocator, try make_runner_error(allocator, "benchmark failed"));
-            continue;
-        };
-
-        const future = try make_runner_success(allocator, run_time);
-        try results_list.append(allocator, future);
-        log.debug("candidate {d}: {d:.6}s", .{ i, run_time });
+    var results_list = std.ArrayList(OwnedValue).empty;
+    defer {
+        for (results_list.items) |*value| value.deinit();
+        results_list.deinit(allocator);
     }
 
-    var results_arr = try Array.from_values(allocator, results_list.items);
-    defer results_arr.deinit();
-    // Transfer ownership to caller via result pointer
-    results_arr.handle.incref();
-    result.* = results_arr.as_value().raw;
+    for (0..num_inputs) |i| {
+        var input = try inputs.get(allocator, i);
+        defer input.deinit();
+        const future = run_candidate(state, input.borrow()) catch |err| blk: {
+            log.warn("candidate {d} measurement failed: {s}", .{ i, @errorName(err) });
+            break :blk try make_runner_error(allocator, @errorName(err));
+        };
+        try results_list.append(allocator, future);
+    }
+
+    var results_arr = try array_from_owned(allocator, results_list.items);
+    return results_arr.take_value();
 }
 
-/// Benchmark a compiled kernel function. Returns median time in seconds.
-fn benchmark_kernel(state: *TuneState, func: c.TVMFFIObjectHandle) !f64 {
+/// Measure one `RunnerInput` from `python/tvm/meta_schedule/runner/runner.py`.
+fn run_candidate(state: *TuneState, input_value: Value) !OwnedValue {
     const allocator = state.allocator;
-    const io = state.io;
+    const input = try ms.RunnerInput.from_value(input_value);
+    const path = try input.dupe_artifact_path(allocator);
+    defer allocator.free(path);
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    var loaded = try RuntimeModule.load_from_file(allocator, path_z);
+    defer loaded.deinit();
+    const run_times = try benchmark_kernel(state, loaded);
+    defer allocator.free(run_times);
+    return try make_runner_success(allocator, run_times);
+}
+
+/// Measure a compiled kernel with TVM's target timer.
+///
+/// The returned repeat averages belong to `state.allocator`.
+fn benchmark_kernel(state: *TuneState, module: RuntimeModule) ![]f64 {
+    const allocator = state.allocator;
     const dev_type: dlpack.DeviceType = switch (state.target_kind) {
         .cpu => .cpu,
         .cuda => .cuda,
     };
 
-    // Allocate the candidate's input tensors.
     var tensors = std.ArrayList(Tensor).empty;
     defer {
         for (tensors.items) |*t| t.deinit();
@@ -437,260 +462,122 @@ fn benchmark_kernel(state: *TuneState, func: c.TVMFFIObjectHandle) !f64 {
     }
 
     for (state.tensor_shapes) |shape| {
-        var size: usize = 1;
-        for (shape) |dim| size *= @intCast(dim);
+        const dtype = try dlpack_dtype(state.tensor_dtype);
+        const bytes = dlpack.byte_count(shape, dtype) catch
+            return error.InvalidTensorLayout;
 
-        const data = try allocator.alloc(f32, size);
-        defer allocator.free(data);
-        for (data, 0..) |*v, idx| v.* = @as(f32, @floatFromInt(idx % 10)) * 0.1;
+        const tensor = blk: {
+            const data = try allocator.alloc(u8, bytes);
+            defer allocator.free(data);
+            @memset(data, 0);
 
-        const shape_copy = try allocator.dupe(i64, shape);
-        defer allocator.free(shape_copy);
-
-        const tensor = try Tensor.allocate(
-            allocator,
-            data,
-            shape_copy,
-            dev_type,
-            state.device_ordinal,
-        );
+            break :blk try Tensor.allocate(
+                allocator,
+                data,
+                shape,
+                dtype,
+                dev_type,
+                state.device_ordinal,
+            );
+        };
         try tensors.append(allocator, tensor);
     }
 
-    // Build the packed call arguments.
-    var call_args = try allocator.alloc(Value, tensors.items.len);
-    defer allocator.free(call_args);
-    for (tensors.items, 0..) |t, j| {
-        call_args[j] = t.as_value();
-    }
-
-    // Warmup and synchronize before collecting host-side timings.
-    var warmup_result = try api.call_handle(allocator, func, call_args);
-    defer warmup_result.decref();
-    try runtime.synchronize(allocator, dev_type, state.device_ordinal);
-
-    // Timed runs (5 iterations, take median)
-    const num_runs: usize = 5;
-    var times: [5]f64 = std.mem.zeroes([5]f64);
-    for (0..num_runs) |run_idx| {
-        const start = std.Io.Timestamp.now(io, .awake);
-        {
-            var call_result = try api.call_handle(allocator, func, call_args);
-            defer call_result.decref();
-        }
-        try runtime.synchronize(allocator, dev_type, state.device_ordinal);
-        const elapsed = start.untilNow(io, .awake);
-        times[run_idx] = @as(f64, @floatFromInt(elapsed.toNanoseconds())) / 1e9;
-    }
-    std.mem.sort(f64, &times, {}, std.sort.asc(f64));
-    return times[num_runs / 2];
+    var evaluator = try module.time_evaluator(
+        allocator,
+        "main",
+        dev_type,
+        state.device_ordinal,
+        state.measurement,
+    );
+    defer evaluator.deinit();
+    return try evaluator.measure(allocator, tensors.items);
 }
 
-// CUDA tensor intrinsics
-
-/// Load and register CUDA tensor intrinsics (WMMA, MMA) from pre-serialized
-/// JSON files in `artifacts/cuda_intrinsics/`.
-///
-/// These intrinsics are required for CUDA MetaSchedule tuning. Without them,
-///  the schedule space generator cannot emit tensor core instructions.
-/// Pre-generated by `scripts/generate_cuda_intrinsics.py`.
-/// Safe to call multiple times (only loads once).
-var cuda_intrinsics_loaded: bool = false;
-
-fn load_cuda_intrinsics(io: std.Io, allocator: std.mem.Allocator) !void {
-    if (cuda_intrinsics_loaded) return;
-
-    const intrinsics_dir = "artifacts/cuda_intrinsics";
-    var dir = std.Io.Dir.cwd().openDir(io, intrinsics_dir, .{ .iterate = true }) catch |err| {
-        log.err("failed to open {s}: {s}", .{ intrinsics_dir, @errorName(err) });
-        log.err("run: python3 scripts/generate_cuda_intrinsics.py", .{});
-        return err;
+fn dlpack_dtype(dtype: DType) !dlpack.DataType {
+    return switch (dtype) {
+        .f16 => .f16_,
+        .f32 => .f32_,
+        else => error.UnsupportedDType,
     };
-    defer dir.close(io);
-
-    var loaded_count: usize = 0;
-    var iter = dir.iterate();
-    while (try iter.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
-
-        const json_data = dir.readFileAlloc(io, entry.name, allocator, .limited(1_000_000)) catch |err| {
-            log.warn("failed to read {s}: {s}", .{ entry.name, @errorName(err) });
-            continue;
-        };
-        defer allocator.free(json_data);
-
-        const parsed = std.json.parseFromSlice(
-            struct { name: []const u8, desc: []const u8, impl: []const u8 },
-            allocator,
-            json_data,
-            .{},
-        ) catch |err| {
-            log.warn("failed to parse {s}: {s}", .{ entry.name, @errorName(err) });
-            continue;
-        };
-        defer parsed.deinit();
-
-        const data = parsed.value;
-        const name_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{data.name}, 0) catch continue;
-        defer allocator.free(name_z);
-        const desc_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{data.desc}, 0) catch continue;
-        defer allocator.free(desc_z);
-        const impl_z = std.fmt.allocPrintSentinel(allocator, "{s}", .{data.impl}, 0) catch continue;
-        defer allocator.free(impl_z);
-
-        const desc_func = api.load_json(allocator, desc_z) catch continue;
-        const impl_func = api.load_json(allocator, impl_z) catch continue;
-        const intrin = tir.tensor_intrin(allocator, desc_func, impl_func) catch continue;
-        tir.register_tensor_intrin(allocator, name_z, intrin, false) catch continue;
-
-        loaded_count += 1;
-    }
-
-    log.info("loaded {d} CUDA tensor intrinsics", .{loaded_count});
-    cuda_intrinsics_loaded = true;
 }
 
-// Helpers.
-
-/// Persisted per-shape tuning state, stored as `state.json` in the work dir.
-const PersistedTuneState = struct {
-    next_candidate: u32 = 0,
-};
-
-fn read_tune_state(io: std.Io, allocator: std.mem.Allocator, work_cache: Cache) PersistedTuneState {
-    const state_file = work_cache.join("state.json") catch return .{};
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, state_file.path(), allocator, .limited(4096)) catch return .{};
-    defer allocator.free(bytes);
-    const parsed = std.json.parseFromSlice(PersistedTuneState, allocator, bytes, .{
-        .ignore_unknown_fields = true,
-    }) catch return .{};
-    defer parsed.deinit();
-    return parsed.value;
+fn validate_tuning_limits(
+    max_trials: u32,
+    trials_per_iter: u32,
+    measurement: runtime.TimeEvaluatorOptions,
+) !void {
+    if (max_trials == 0) return error.InvalidTrialCount;
+    if (trials_per_iter == 0) return error.InvalidTrialCount;
+    try measurement.validate();
 }
 
-fn write_tune_state(io: std.Io, allocator: std.mem.Allocator, work_cache: Cache, state: PersistedTuneState) void {
-    const state_file = work_cache.join("state.json") catch return;
-    const path = state_file.path();
-    const bytes = std.json.Stringify.valueAlloc(allocator, state, .{}) catch return;
-    defer allocator.free(bytes);
-    var file = std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true }) catch return;
-    defer file.close(io);
-    file.writeStreamingAll(io, bytes) catch {};
+test validate_tuning_limits {
+    try std.testing.expectError(
+        error.InvalidTrialCount,
+        validate_tuning_limits(0, 1, .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidTrialCount,
+        validate_tuning_limits(1, 0, .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidTimeEvaluatorOptions,
+        validate_tuning_limits(1, 1, .{ .repeats = 0 }),
+    );
+    try validate_tuning_limits(1, 2, .{});
 }
 
-fn make_noop_callback() !Value {
+fn make_noop_callback() !ffi.PackedFunction {
     const noop = struct {
-        fn f(_: ?*anyopaque, _: [*c]const c.TVMFFIAny, _: i32, result: [*c]c.TVMFFIAny) callconv(.c) c_int {
-            result.* = Value.none().raw;
-            return 0;
+        fn f(_: ?*anyopaque, _: *const ffi.CallbackArgs) !ffi.CallbackOutput {
+            return .none;
         }
     }.f;
-    return try api.create_packed_func(null, noop, null);
+    return try ffi.PackedFunction.create(null, noop, null);
 }
 
-fn make_random_cost_model(allocator: std.mem.Allocator) !Value {
-    const noop = struct {
-        fn f(_: ?*anyopaque, _: [*c]const c.TVMFFIAny, _: i32, result: [*c]c.TVMFFIAny) callconv(.c) c_int {
-            result.* = Value.none().raw;
-            return 0;
-        }
-    }.f;
-
-    const predict = struct {
-        fn f(_: ?*anyopaque, args: [*c]const c.TVMFFIAny, num_args: i32, result: [*c]c.TVMFFIAny) callconv(.c) c_int {
-            if (num_args < 3) {
-                result.* = Value.none().raw;
-                return -1;
-            }
-            const candidates = Value{ .raw = args[1] };
-            const return_ptr = args[2];
-
-            // Get candidate count via no-allocator path (callback constraint)
-            var len_out: c.TVMFFIAny = Value.none().raw;
-            var len_args_arr = [_]c.TVMFFIAny{candidates.raw};
-            var name_arr: c.TVMFFIByteArray = .{ .data = "ffi.ArraySize", .size = 13 };
-            var func_handle: c.TVMFFIObjectHandle = null;
-            if (c.TVMFFIFunctionGetGlobal(&name_arr, &func_handle) != 0 or func_handle == null) {
-                result.* = Value.none().raw;
-                return -1;
-            }
-            defer _ = c.TVMFFIObjectDecRef(func_handle);
-            if (c.TVMFFIFunctionCall(func_handle, &len_args_arr, 1, &len_out) != 0) {
-                result.* = Value.none().raw;
-                return -1;
-            }
-            const n: usize = @intCast((Value{ .raw = len_out }).as_int() orelse 0);
-
-            // Write random scores
-            if (return_ptr.type_index == c.kTVMFFIOpaquePtr and return_ptr.unnamed_1.v_ptr != null) {
-                const scores: [*]f64 = @ptrCast(@alignCast(return_ptr.unnamed_1.v_ptr));
-                var prng = std.Random.DefaultPrng.init(42);
-                for (0..n) |i| scores[i] = prng.random().float(f64);
-            }
-
-            result.* = Value.none().raw;
-            return 0;
-        }
-    }.f;
-
-    const as_string = struct {
-        fn f(_: ?*anyopaque, _: [*c]const c.TVMFFIAny, _: i32, result: [*c]c.TVMFFIAny) callconv(.c) c_int {
-            const str_val = api.make_tvm_string("ZigRandomModel") catch {
-                result.* = Value.none().raw;
-                return -1;
-            };
-            result.* = str_val.raw;
-            return 0;
-        }
-    }.f;
-
-    const noop_val = try api.create_packed_func(null, noop, null);
-    defer noop_val.decref();
-    const predict_val = try api.create_packed_func(null, predict, null);
-    defer predict_val.decref();
-    const as_string_val = try api.create_packed_func(null, as_string, null);
-    defer as_string_val.decref();
-
-    return try MetaSchedule.py_cost_model(allocator, noop_val, noop_val, noop_val, predict_val, as_string_val);
-}
-
-fn register_cpu_count(allocator: std.mem.Allocator) !void {
+fn register_cpu_count() !void {
     const cpu_count_cb = struct {
-        fn f(_: ?*anyopaque, _: [*c]const c.TVMFFIAny, _: i32, result: [*c]c.TVMFFIAny) callconv(.c) c_int {
-            result.* = Value.int(@intCast(std.Thread.getCpuCount() catch 1)).raw;
-            return 0;
+        fn f(_: ?*anyopaque, args: *const ffi.CallbackArgs) !ffi.CallbackOutput {
+            if (args.len() != 0) return error.InvalidCallbackArity;
+            return .{ .integer = @intCast(std.Thread.getCpuCount() catch 1) };
         }
     }.f;
 
-    const func_val = try api.create_packed_func(null, cpu_count_cb, null);
-    const func_handle = func_val.as_object() orelse return error.TvmCallFailed;
-    defer _ = c.TVMFFIObjectDecRef(func_handle);
-
-    for ([_][]const u8{ "meta_schedule._cpu_count", "meta_schedule.cpu_count" }) |name| {
-        api.set_global(name, func_handle, true) catch {};
-    }
-    _ = allocator;
+    var function = try ffi.PackedFunction.create(null, cpu_count_cb, null);
+    defer function.deinit();
+    try ms.register_cpu_count_callback(&function);
 }
 
-fn make_builder_error(allocator: std.mem.Allocator, msg: []const u8) !Value {
+fn make_builder_error(allocator: std.mem.Allocator, msg: []const u8) !OwnedValue {
     const msg_z = try std.fmt.allocPrintSentinel(allocator, "{s}", .{msg}, 0);
     defer allocator.free(msg_z);
-    return try MetaSchedule.builder_result(allocator, null, msg_z);
+    var result = try ms.BuilderResult.init(allocator, .{ .failure = msg_z });
+    return result.take_value();
 }
 
 /// Create a RunnerFuture wrapping a RunnerResult with an error message.
-fn make_runner_error(allocator: std.mem.Allocator, msg: []const u8) !Value {
+fn make_runner_error(allocator: std.mem.Allocator, msg: []const u8) !OwnedValue {
     const msg_z = try std.fmt.allocPrintSentinel(allocator, "{s}", .{msg}, 0);
     defer allocator.free(msg_z);
-    const rr = try MetaSchedule.runner_result(allocator, null, msg_z);
-    return try MetaSchedule.runner_future(allocator, rr);
+    var runner_result = try ms.RunnerResult.init(allocator, .{ .failure = msg_z });
+    defer runner_result.deinit();
+    var future = try ms.RunnerFuture.completed(allocator, &runner_result);
+    return future.take_value();
 }
 
 /// Create a RunnerFuture wrapping a RunnerResult with timing data.
-fn make_runner_success(allocator: std.mem.Allocator, run_secs: f64) !Value {
-    var run_secs_arr = try Array.from_values(allocator, &.{Value.float(run_secs)});
-    defer run_secs_arr.deinit();
-    const rr = try MetaSchedule.runner_result(allocator, run_secs_arr.as_value(), null);
-    return try MetaSchedule.runner_future(allocator, rr);
+fn make_runner_success(allocator: std.mem.Allocator, run_secs: []const f64) !OwnedValue {
+    var runner_result = try ms.RunnerResult.init(allocator, .{ .success = run_secs });
+    defer runner_result.deinit();
+    var future = try ms.RunnerFuture.completed(allocator, &runner_result);
+    return future.take_value();
+}
+
+fn array_from_owned(allocator: std.mem.Allocator, items: []const OwnedValue) !Array {
+    const values = try allocator.alloc(Value, items.len);
+    defer allocator.free(values);
+    for (items, values) |*item, *value| value.* = item.borrow();
+    return try Array.from_values(allocator, values);
 }

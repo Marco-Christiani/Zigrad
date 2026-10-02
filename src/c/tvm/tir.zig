@@ -3,79 +3,140 @@
 //! Covers the `tvm/ir/`, `tvm/tir/`, `tvm/target/`, and `tvm/te/` operations
 //!  required by TIR lowering.
 const std = @import("std");
-const api = @import("api.zig");
+const ffi = @import("ffi.zig");
+const container = @import("container.zig");
 const c = @import("c.zig");
 const dlpack = @import("../dlpack.zig");
-const Value = api.Value;
-const ObjectHandle = api.ObjectHandle;
-const TvmError = api.TvmError;
+const Value = ffi.Value;
+const TvmError = ffi.TvmError;
 const TargetKind = @import("../../tvm/config.zig").TargetKind;
 
-const helpers = api.helpers;
 const log = std.log.scoped(.@"zg/tvm_tir");
 
-// IRModule
+/// TVM TensorIR function.
+pub const PrimFunc = struct {
+    object: ffi.Object,
 
-pub const IRModule = struct {
-    handle: ObjectHandle,
-    /// TVM runtime type index, preserved from the FFI call that created this object.
-    type_index: c_int = c.kTVMFFIStaticObjectBegin,
-
-    pub const deinit = helpers.deinit(IRModule);
-    pub const as_value = helpers.as_value(IRModule);
-
-    /// Apply a single TIR transform pass to this module (in-place replacement).
-    pub fn apply_pass(self: *IRModule, allocator: std.mem.Allocator, pass: TirPass) !void {
-        // Construct the pass object
-        const pass_val = try pass.create(allocator);
-        defer {
-            if (pass_val.as_object()) |obj| _ = c.TVMFFIObjectDecRef(obj);
-        }
-
-        const old_ptr = self.handle.ptr;
-
-        // Run it: transform.RunPass(pass, module) -> module
-        const result = try api.call_global(allocator, "transform.RunPass", &.{ pass_val, self.as_value() });
-
-        const new_obj = result.as_object() orelse return error.TvmCallFailed;
-        // Replace handle (decref old if different)
-        if (self.handle.ptr != new_obj) {
-            self.handle.deinit();
-        }
-        self.handle.ptr = new_obj;
-        self.type_index = result.raw.type_index;
-        log.debug("applied {s} (ptr {s}, type_index {d}{s}{d})", .{
-            pass.name(),
-            if (old_ptr != new_obj) "changed" else "same",
-            @as(c_int, if (old_ptr == new_obj) self.type_index else 0),
-            "->",
-            result.raw.type_index,
-        });
+    /// Take a packed result as a TIR function.
+    pub fn take(value: *ffi.OwnedValue) TvmError!PrimFunc {
+        try value.borrow().require_instance("tir.PrimFunc");
+        return .{ .object = try .take(value) };
     }
 
-    /// Apply a pass, ignoring failure (for optional/non-fatal passes).
-    pub fn apply_pass_optional(self: *IRModule, allocator: std.mem.Allocator, pass: TirPass) void {
-        self.apply_pass(allocator, pass) catch {
-            log.debug("optional pass {s} failed (non-fatal)", .{pass.name()});
-        };
+    fn as_value(self: *const PrimFunc) Value {
+        return self.object.as_value();
+    }
+
+    /// Release the TVM TIR function.
+    pub fn deinit(self: *PrimFunc) void {
+        self.object.deinit();
+        self.* = undefined;
     }
 };
 
-// Target
+/// TVM IR module.
+pub const IRModule = struct {
+    object: ffi.Object,
 
+    /// Take a packed result as an IR module.
+    pub fn take(value: *ffi.OwnedValue) TvmError!IRModule {
+        try value.borrow().require_instance("ir.IRModule");
+        return .{ .object = try .take(value) };
+    }
+
+    /// Copy an IR module reference.
+    pub fn retain(value: Value) TvmError!IRModule {
+        try value.require_instance("ir.IRModule");
+        return .{ .object = try ffi.Object.retain(value) };
+    }
+
+    /// Create a module containing one named entry function.
+    pub fn from_entry(
+        /// Allocator used by TVM packed calls.
+        allocator: std.mem.Allocator,
+        /// Name assigned to the function and its global symbol.
+        name: [:0]const u8,
+        /// Function referenced by the new module.
+        function: *const PrimFunc,
+    ) !IRModule {
+        var entry = try ffi.call_global(allocator, "ir.BaseFuncWithAttr", &.{
+            function.as_value(), Value.str("global_symbol"), Value.str(name),
+        });
+        defer entry.deinit();
+        var global = try ffi.call_global(
+            allocator,
+            "ir.GlobalVar",
+            &.{Value.str(name)},
+        );
+        defer global.deinit();
+        var functions = try container.Map.from_pairs(allocator, &.{
+            global.borrow(),
+            entry.borrow(),
+        });
+        defer functions.deinit();
+        var global_info = try container.Map.from_pairs(allocator, &.{});
+        defer global_info.deinit();
+        return try ffi.call_global_take(IRModule, allocator, "ir.IRModule", &.{
+            functions.as_value(), Value.none(), global_info.as_value(),
+        });
+    }
+
+    /// Apply a single TIR transform pass to this module (in-place replacement).
+    pub fn apply_pass(self: *IRModule, allocator: std.mem.Allocator, pass: TirPass) !void {
+        var pass_value = try pass.create(allocator);
+        defer pass_value.deinit();
+
+        const old_ptr = self.object.ptr();
+
+        var result = try ffi.call_global(allocator, "transform.RunPass", &.{
+            pass_value.borrow(),
+            self.as_value(),
+        });
+        errdefer result.deinit();
+
+        try result.borrow().require_instance("ir.IRModule");
+        const new_object = try ffi.Object.take(&result);
+        const new_ptr = new_object.ptr();
+        // Keep the reference returned by RunPass and release the prior one.
+        self.object.deinit();
+        self.object = new_object;
+        log.debug("applied {s} (object {s}, type {d})", .{
+            pass.name(),
+            if (old_ptr == new_ptr) "retained" else "replaced",
+            self.as_value().raw.type_index,
+        });
+    }
+
+    pub fn as_value(self: *const IRModule) Value {
+        return self.object.as_value();
+    }
+
+    /// Release the TVM IR module.
+    pub fn deinit(self: *IRModule) void {
+        self.object.deinit();
+        self.* = undefined;
+    }
+};
+
+/// TVM compilation target.
 pub const Target = struct {
-    handle: ObjectHandle,
-    type_index: c_int = c.kTVMFFIStaticObjectBegin,
+    object: ffi.Object,
 
-    pub const deinit = helpers.deinit(Target);
-    pub const as_value = helpers.as_value(Target);
+    /// Take a packed result as a target.
+    pub fn take(value: *ffi.OwnedValue) !Target {
+        try value.borrow().require_instance("target.Target");
+        return .{ .object = try .take(value) };
+    }
 
     /// Create a Target from a TargetKind.
     ///
     /// For CPU targets, includes `-num-cores` (required by MetaSchedule).
     pub fn create(
+        /// Allocator used by target detection and TVM packed calls.
         allocator: std.mem.Allocator,
+        /// Target family to detect.
         kind: TargetKind,
+        /// Device index used for target detection.
         device_ordinal: i32,
     ) !Target {
         var resolution = try describe(
@@ -87,10 +148,23 @@ pub const Target = struct {
         return try create_from_description(allocator, resolution.description);
     }
 
-    /// Detect a target and retain its cache identity with the TVM object.
-    pub fn resolve(
+    /// Parse a TVM target description without probing a device.
+    pub fn from_description(
+        /// Allocator used by the target constructor.
         allocator: std.mem.Allocator,
+        /// Null-terminated TVM target description.
+        description: [:0]const u8,
+    ) !Target {
+        return try create_from_description(allocator, description);
+    }
+
+    /// Detect a target and preserve its cache-key description.
+    pub fn resolve(
+        /// Allocator used until the returned target is deinitialized.
+        allocator: std.mem.Allocator,
+        /// Target family to detect.
         kind: TargetKind,
+        /// Device index used for target detection.
         device_ordinal: i32,
     ) !ResolvedTarget {
         var resolution = try describe(
@@ -114,10 +188,13 @@ pub const Target = struct {
         };
     }
 
-    /// Detect the target properties used for compilation and cache identity.
+    /// Detect the target properties used for compilation and artifact caching.
     pub fn describe(
+        /// Allocator used until the returned description is deinitialized.
         allocator: std.mem.Allocator,
+        /// Target family to detect.
         kind: TargetKind,
+        /// Device index used for target detection.
         device_ordinal: i32,
     ) !TargetDescription {
         return switch (kind) {
@@ -159,26 +236,44 @@ pub const Target = struct {
     }
 
     /// Create a composite target with a host target attached.
-    pub fn with_host(self: Target, allocator: std.mem.Allocator, host: Target) !Target {
-        const result = try api.call_global(allocator, "target.WithHost", &.{
+    pub fn with_host(
+        self: Target,
+        /// Allocator used by the packed call.
+        allocator: std.mem.Allocator,
+        /// Host target attached to the returned target.
+        host: Target,
+    ) !Target {
+        return try ffi.call_global_take(Target, allocator, "target.WithHost", &.{
             self.as_value(),
             host.as_value(),
         });
-        const obj = result.as_object() orelse return error.TvmCallFailed;
-        return .{ .handle = .{ .ptr = obj }, .type_index = result.raw.type_index };
+    }
+
+    pub fn as_value(self: *const Target) Value {
+        return self.object.as_value();
+    }
+
+    /// Release the TVM target.
+    pub fn deinit(self: *Target) void {
+        self.object.deinit();
+        self.* = undefined;
     }
 };
 
 /// TVM target paired with the description that produced it.
 pub const ResolvedTarget = struct {
+    /// Allocator used to release `description` and `gpu_arch`.
     allocator: std.mem.Allocator,
+    /// TVM target description used to construct `target`.
     description: [:0]u8,
 
     /// NVRTC architecture spelling for CUDA targets.
     gpu_arch: ?[]u8,
 
+    /// Target constructed from `description`.
     target: Target,
 
+    /// Release the target and its copied descriptions.
     pub fn deinit(self: *ResolvedTarget) void {
         self.target.deinit();
         self.allocator.free(self.description);
@@ -200,20 +295,24 @@ fn create_from_description(
     allocator: std.mem.Allocator,
     description: [:0]const u8,
 ) !Target {
-    const result = try api.call_global(
+    return try ffi.call_global_take(
+        Target,
         allocator,
         "target.Target",
         &.{Value.str(description)},
     );
-    const obj = result.as_object() orelse return error.TvmCallFailed;
-    return .{ .handle = .{ .ptr = obj }, .type_index = result.raw.type_index };
 }
 
+/// Detected target properties used before constructing a TVM target.
 pub const TargetDescription = struct {
+    /// Allocator used to release `description` and `gpu_arch`.
     allocator: std.mem.Allocator,
+    /// TVM target description.
     description: [:0]u8,
+    /// NVRTC architecture spelling for CUDA targets.
     gpu_arch: ?[]u8,
 
+    /// Release the copied target description.
     pub fn deinit(self: *TargetDescription) void {
         self.allocator.free(self.description);
         if (self.gpu_arch) |gpu_arch| self.allocator.free(gpu_arch);
@@ -225,10 +324,10 @@ fn detect_cuda_properties(
     allocator: std.mem.Allocator,
     device_ordinal: i32,
 ) !CudaProperties {
-    if (device_ordinal < 0) return error.TvmCallFailed;
+    if (device_ordinal < 0) return error.InvalidDeviceOrdinal;
     if (try device_int_attribute(device_ordinal, .exist) == 0) {
         log.err("TVM cannot access CUDA device {d}", .{device_ordinal});
-        return error.TvmCallFailed;
+        return error.DeviceUnavailable;
     }
 
     const compute_version = try device_string_attribute(
@@ -274,7 +373,7 @@ fn device_int_attribute(
     device_ordinal: i32,
     attribute: DeviceAttribute,
 ) !i64 {
-    const result = try api.call_global(
+    var result = try ffi.call_global(
         std.heap.c_allocator,
         "runtime.GetDeviceAttr",
         &.{
@@ -283,7 +382,8 @@ fn device_int_attribute(
             Value.int(@intFromEnum(attribute)),
         },
     );
-    return result.to_int() orelse error.UnexpectedTvmType;
+    defer result.deinit();
+    return try result.borrow().to_int();
 }
 
 fn device_string_attribute(
@@ -291,7 +391,7 @@ fn device_string_attribute(
     device_ordinal: i32,
     attribute: DeviceAttribute,
 ) ![]u8 {
-    var result = try api.call_global(
+    var result = try ffi.call_global(
         allocator,
         "runtime.GetDeviceAttr",
         &.{
@@ -300,7 +400,8 @@ fn device_string_attribute(
             Value.int(@intFromEnum(attribute)),
         },
     );
-    return try result.as_string(allocator);
+    defer result.deinit();
+    return try result.borrow().dupe_string(allocator);
 }
 
 fn cuda_target_description(
@@ -308,7 +409,7 @@ fn cuda_target_description(
     properties: CudaProperties,
     gpu_arch: []const u8,
 ) ![:0]u8 {
-    if (gpu_arch.len == 0) return error.TvmCallFailed;
+    if (gpu_arch.len == 0) return error.InvalidGpuArchitecture;
 
     return try std.fmt.allocPrintSentinel(
         allocator,
@@ -335,14 +436,14 @@ fn cuda_architecture(
     var architecture_len: usize = 0;
     for (compute_version) |byte| switch (byte) {
         '0'...'9' => {
-            if (architecture_len == architecture.len) return error.TvmCallFailed;
+            if (architecture_len == architecture.len) return error.InvalidComputeCapability;
             architecture[architecture_len] = byte;
             architecture_len += 1;
         },
         '.' => {},
-        else => return error.TvmCallFailed,
+        else => return error.InvalidComputeCapability,
     };
-    if (architecture_len == 0) return error.TvmCallFailed;
+    if (architecture_len == 0) return error.InvalidComputeCapability;
     return try std.fmt.allocPrint(
         allocator,
         "sm_{s}",
@@ -377,6 +478,14 @@ test cuda_architecture {
     const architecture = try cuda_architecture(std.testing.allocator, "8.9");
     defer std.testing.allocator.free(architecture);
     try std.testing.expectEqualStrings("sm_89", architecture);
+    try std.testing.expectError(
+        error.InvalidComputeCapability,
+        cuda_architecture(std.testing.allocator, ""),
+    );
+    try std.testing.expectError(
+        error.InvalidComputeCapability,
+        cuda_architecture(std.testing.allocator, "8.x"),
+    );
 }
 
 /// TIR transform passes as a tagged union. Compile-time checked names
@@ -388,15 +497,27 @@ pub const TirPass = union(enum) {
     plan_and_update_buffer_allocation,
     convert_blocks_to_opaque,
     lift_thread_binding,
+    manifest_shared_memory_local_stage,
+    lower_auto_copy,
+    unify_thread_binding,
     lower_match_buffer,
+    inject_permuted_layout,
+    annotate_irregular_loop,
+    inject_software_pipeline,
+    transform_mma_buffer_layout,
     lower_opaque_block,
     flatten_buffer,
+    bf16_compute_legalize,
     loop_partition,
     inject_virtual_thread,
     inject_double_buffer,
     storage_rewrite,
+    hoist_if_then_else,
     simplify,
     remove_no_op,
+    rewrite_unsafe_select,
+    verify_vtcm_limit,
+    lower_vtcm_alloc,
     verify_memory,
     annotate_entry_func,
     infer_fragment,
@@ -405,6 +526,8 @@ pub const TirPass = union(enum) {
     split_host_device,
     merge_shared_memory_allocations,
     make_packed_api,
+    fp8_storage_legalize,
+    bf16_storage_legalize,
     lower_device_kernel_launch,
     lower_tvm_builtin,
     lower_custom_datatypes,
@@ -423,6 +546,7 @@ pub const TirPass = union(enum) {
     narrow_data_type: struct { target_bits: i64 },
     vectorize_loop: struct { enable: bool },
     common_subexpr_elim: struct { enable_cse: bool, enable_equiv: bool },
+    fp8_compute_legalize: struct { promote_dtype: [:0]const u8 },
 
     /// Returns the TVM global function name for this pass.
     ///
@@ -437,24 +561,35 @@ pub const TirPass = union(enum) {
             .common_subexpr_elim => "tir.transform.CommonSubexprElimTIR",
             .make_packed_api => "tir.transform.MakePackedAPI",
             .lower_tvm_builtin => "tir.transform.LowerTVMBuiltin",
+            .bf16_compute_legalize => "tir.transform.BF16ComputeLegalize",
+            .fp8_compute_legalize => "tir.transform.FP8ComputeLegalize",
+            .verify_vtcm_limit => "tir.transform.VerifyVTCMLimit",
+            .fp8_storage_legalize => "tir.transform.FP8StorageLegalize",
+            .bf16_storage_legalize => "tir.transform.BF16StorageLegalize",
             inline else => |_, tag| comptime tag_to_pass_name(@tagName(tag)),
         };
     }
 
     /// Create the TVM pass object by calling the global function with args.
-    pub fn create(self: TirPass, allocator: std.mem.Allocator) TvmError!Value {
+    pub fn create(self: TirPass, allocator: std.mem.Allocator) TvmError!ffi.OwnedValue {
         return switch (self) {
-            .filter => |args| try api.call_global(allocator, self.name(), &.{args.predicate}),
-            .bind_target => |args| try api.call_global(allocator, self.name(), &.{args.target.as_value()}),
-            .thread_sync => |args| try api.call_global(allocator, self.name(), &.{Value.str(args.scope)}),
-            .compact_buffer_alloc => |args| try api.call_global(allocator, self.name(), &.{Value.boolean(args.is_strict)}),
-            .narrow_data_type => |args| try api.call_global(allocator, self.name(), &.{Value.int(args.target_bits)}),
-            .vectorize_loop => |args| try api.call_global(allocator, self.name(), &.{Value.boolean(args.enable)}),
-            .common_subexpr_elim => |args| try api.call_global(allocator, self.name(), &.{
+            .filter => |args| try ffi.call_global(allocator, self.name(), &.{args.predicate}),
+            .bind_target => |args| try ffi.call_global(allocator, self.name(), &.{args.target.as_value()}),
+            .thread_sync => |args| try ffi.call_global(allocator, self.name(), &.{Value.str(args.scope)}),
+            .compact_buffer_alloc => |args| try ffi.call_global(allocator, self.name(), &.{Value.boolean(args.is_strict)}),
+            .narrow_data_type => |args| try ffi.call_global(allocator, self.name(), &.{Value.int(args.target_bits)}),
+            .vectorize_loop => |args| try ffi.call_global(allocator, self.name(), &.{Value.boolean(args.enable)}),
+            .common_subexpr_elim => |args| try ffi.call_global(allocator, self.name(), &.{
                 Value.boolean(args.enable_cse),
                 Value.boolean(args.enable_equiv),
             }),
-            else => try api.call_global(allocator, self.name(), &.{}),
+            .fp8_compute_legalize => |args| try ffi.call_global(
+                allocator,
+                self.name(),
+                &.{Value.str(args.promote_dtype)},
+            ),
+            .verify_vtcm_limit => try ffi.call_global(allocator, self.name(), &.{Value.none()}),
+            else => try ffi.call_global(allocator, self.name(), &.{}),
         };
     }
 
@@ -493,74 +628,76 @@ pub const TirPass = union(enum) {
 ///
 /// Calls `ir.BaseFunc_Attrs` then `ir.DictAttrsGetDict` and wraps the
 /// result as a Map. Returns null if the function has no attributes.
-pub fn get_func_attrs(allocator: std.mem.Allocator, func: Value) TvmError!?api.Map {
-    const dict_attrs = try api.call_global(allocator, "ir.BaseFunc_Attrs", &.{func});
-    defer dict_attrs.decref();
-    if (dict_attrs.raw.type_index == c.kTVMFFINone) return null;
+pub fn get_func_attrs(allocator: std.mem.Allocator, func: Value) TvmError!?container.Map {
+    var dict_attrs = try ffi.call_global(allocator, "ir.BaseFunc_Attrs", &.{func});
+    defer dict_attrs.deinit();
+    if (dict_attrs.borrow().is_none()) return null;
 
-    const map_val = try api.call_global(allocator, "ir.DictAttrsGetDict", &.{dict_attrs});
-    const obj = map_val.as_object() orelse return TvmError.TvmCallFailed;
-    return .{ .handle = .{ .ptr = obj }, .type_index = map_val.raw.type_index };
-}
-
-/// Construct a TensorIntrin from description and implementation PrimFuncs.
-pub fn tensor_intrin(allocator: std.mem.Allocator, desc: Value, impl: Value) TvmError!Value {
-    return try api.call_global(allocator, "tir.TensorIntrin", &.{ desc, impl });
+    var map_value = try ffi.call_global(
+        allocator,
+        "ir.DictAttrsGetDict",
+        &.{dict_attrs.borrow()},
+    );
+    defer map_value.deinit();
+    return try container.Map.retain(map_value.borrow());
 }
 
 /// Register a tensor intrinsic by name.
-pub fn register_tensor_intrin(allocator: std.mem.Allocator, name: [:0]const u8, intrin_val: Value, override: bool) TvmError!void {
-    _ = try api.call_global(allocator, "tir.TensorIntrinRegister", &.{
-        Value.str(name), intrin_val, Value.boolean(override),
+pub fn register_tensor_intrin(
+    /// Allocator used by the registry call.
+    allocator: std.mem.Allocator,
+    /// Null-terminated registry name.
+    name: [:0]const u8,
+    /// TensorIntrin object to register. The registry retains it.
+    intrinsic: Value,
+) TvmError!void {
+    try ffi.call_global_void(allocator, "tir.TensorIntrinRegister", &.{
+        Value.str(name), intrinsic, Value.boolean(true),
     });
 }
 
-/// Build a matmul IRModule from shapes via TE (topi.matmul).
-///
-/// Creates A[M,K] @ B[K,N] = C[M,N] via te.Placeholder + topi.matmul,
-/// wraps in CreatePrimFunc + IRModule with global_symbol="main".
-///
-/// TODO(tvm): Move this fixed matmul recipe behind the kernel-provider
-///  compilation operation.
-pub fn build_matmul_tir(allocator: std.mem.Allocator, m: i64, n: i64, k: i64) TvmError!IRModule {
-    const shape_a = try api.call_global(allocator, "ffi.Array", &.{ Value.int(m), Value.int(k) });
-    defer shape_a.decref();
-    const shape_b = try api.call_global(allocator, "ffi.Array", &.{ Value.int(k), Value.int(n) });
-    defer shape_b.decref();
+/// Load and register each name and tensor intrinsic in a serialized bundle.
+pub fn register_tensor_intrin_bundle(
+    /// Allocator used to deserialize and register the bundle.
+    allocator: std.mem.Allocator,
+    /// Null-terminated JSON array of alternating names and intrinsics.
+    json: [:0]const u8,
+) !usize {
+    var root = try ffi.load_json(allocator, json);
+    defer root.deinit();
+    var entries = try container.Array.retain(root.borrow());
+    defer entries.deinit();
 
-    const tensor_a = try api.call_global(allocator, "te.Placeholder", &.{
-        shape_a, Value.str("float32"), Value.str("A"),
-    });
-    const tensor_b = try api.call_global(allocator, "te.Placeholder", &.{
-        shape_b, Value.str("float32"), Value.str("B"),
-    });
-    log.debug("created placeholders A[{d},{d}] B[{d},{d}]", .{ m, k, k, n });
+    const entry_count = try entries.len(allocator);
+    if (entry_count == 0 or entry_count % 2 != 0)
+        return error.InvalidTensorIntrinsicBundle;
 
-    const tensor_c = api.call_global(allocator, "topi.matmul", &.{
-        tensor_a, tensor_b, Value.boolean(false), Value.boolean(false),
-    }) catch |err1| blk: {
-        log.warn("topi.matmul failed ({s}), trying topi.nn.matmul", .{@errorName(err1)});
-        break :blk try api.call_global(allocator, "topi.nn.matmul", &.{ tensor_a, tensor_b });
-    };
-    log.info("created matmul C[{d},{d}] = A[{d},{d}] @ B[{d},{d}]", .{ m, n, m, k, k, n });
+    var index: usize = 0;
+    while (index < entry_count) : (index += 2) {
+        var name_value = try entries.get(allocator, index);
+        defer name_value.deinit();
+        const name = try name_value.borrow().dupe_string(allocator);
+        defer allocator.free(name);
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
 
-    // CreatePrimFunc
-    const tensors_arr = try api.call_global(allocator, "ffi.Array", &.{ tensor_a, tensor_b, tensor_c });
-    const prim_func = try api.call_global(allocator, "te.CreatePrimFunc", &.{ tensors_arr, Value.none() });
+        var intrinsic = try entries.get(allocator, index + 1);
+        defer intrinsic.deinit();
+        try register_tensor_intrin(allocator, name_z, intrinsic.borrow());
+    }
+    return entry_count / 2;
+}
 
-    // Attach global_symbol="main"
-    const prim_func_attr = try api.call_global(allocator, "ir.BaseFuncWithAttr", &.{
-        prim_func, Value.str("global_symbol"), Value.str("main"),
-    });
-    prim_func.decref();
-
-    // Wrap in IRModule
-    const global_var = try api.call_global(allocator, "ir.GlobalVar", &.{Value.str("main")});
-    const func_map = try api.call_global(allocator, "ffi.Map", &.{ global_var, prim_func_attr });
-    const empty_map = try api.call_global(allocator, "ffi.Map", &.{});
-    const ir_mod = try api.call_global(allocator, "ir.IRModule", &.{ func_map, Value.none(), empty_map });
-
-    const obj = ir_mod.as_object() orelse return TvmError.TvmCallFailed;
-    log.info("created matmul IRModule ({d}x{d}x{d})", .{ m, n, k });
-    return .{ .handle = .{ .ptr = obj }, .type_index = ir_mod.raw.type_index };
+/// Return whether a tensor intrinsic is registered under `name`.
+pub fn tensor_intrin_registered(
+    allocator: std.mem.Allocator,
+    name: [:0]const u8,
+) !bool {
+    var intrinsic = try ffi.call_global(
+        allocator,
+        "tir.TensorIntrinGet",
+        &.{ Value.str(name), Value.boolean(true) },
+    );
+    defer intrinsic.deinit();
+    return !intrinsic.borrow().is_none();
 }

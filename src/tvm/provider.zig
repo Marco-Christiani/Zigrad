@@ -7,7 +7,7 @@ const contraction = @import("../pr/analysis/contraction.zig");
 const pattern = @import("../pr/analysis/pattern.zig");
 
 const Cache = @import("../cache.zig").Cache;
-const device = @import("../device.zig");
+const device_mod = @import("../device.zig");
 const kernel = @import("../kernel.zig");
 const pr = @import("../pr/pr.zig");
 const TypedPtr = @import("../utils/rtti.zig").TypedPtr;
@@ -23,14 +23,14 @@ pub const TvmProvider = struct {
     io: std.Io,
     /// Target compiler and linker configuration.
     compile_config: config.CompileConfig,
-    /// Persistent artifact and tuning cache.
+    /// Artifact and tuning cache.
     cache: Cache,
     /// Maximum candidates measured for one cache miss.
     max_trials: u32 = 64,
     /// Candidates submitted per tuning iteration.
     trials_per_iter: u32 = 16,
 
-    /// Shared dispatch state owning the TVM module cache.
+    /// Dispatch state owning the TVM module cache.
     ///
     /// The state must outlive runtime capabilities returned by this provider.
     dispatch_state: *TvmDispatchState,
@@ -51,7 +51,7 @@ pub const TvmProvider = struct {
     pub fn init(
         /// I/O context used by cache and tuning operations.
         io: std.Io,
-        /// Persistent artifact and tuning cache.
+        /// Artifact and tuning cache.
         cache: Cache,
         /// Runtime state shared by compiled artifacts.
         dispatch_state: *TvmDispatchState,
@@ -102,22 +102,22 @@ pub const TvmProvider = struct {
         }
     }
 
-    fn compile_impl(ptr: *anyopaque, func: pr.Function, selected_device: device.Device, allocator: std.mem.Allocator) kernel.CompileError!kernel.Artifact {
+    fn compile_impl(ptr: *anyopaque, func: pr.Function, device: device_mod.Device, allocator: std.mem.Allocator) kernel.CompileError!kernel.Artifact {
         const self: *TvmProvider = @ptrCast(@alignCast(ptr));
-        return try self.compile(func, selected_device, allocator);
+        return try self.compile(func, device, allocator);
     }
 
     /// Compile one supported matrix-multiply function into a kernel artifact.
     ///
-    /// A stable cached artifact is reused when present. A cache miss runs the
-    ///  shared TVM matmul tuner and stores its selected artifact.
+    /// A cached artifact is reused when present. A cache miss runs the TVM
+    ///  matmul tuner and stores the selected artifact.
     fn compile(
         self: *TvmProvider,
         func: pr.Function,
-        selected_device: device.Device,
+        device: device_mod.Device,
         allocator: std.mem.Allocator,
     ) kernel.CompileError!kernel.Artifact {
-        if (!self.compile_config.target.accepts(selected_device)) {
+        if (!self.compile_config.target.accepts(device)) {
             return error.Unsupported;
         }
         const mm_shape = validate_matmul_function(func) orelse return error.Unsupported;
@@ -126,13 +126,38 @@ pub const TvmProvider = struct {
             func.name, mm_shape.m, mm_shape.n, mm_shape.k,
         });
 
-        const cached = mm.load_artifact(
+        const cached = try self.load_artifact(allocator, mm_shape, device);
+        if (cached) |artifact| return make_kernel_artifact(artifact);
+
+        const result = try self.tune(allocator, mm_shape, device);
+
+        const artifact = try self.load_artifact(
+            allocator,
+            mm_shape,
+            device,
+        ) orelse return error.CompileFailed;
+
+        log.info("compiled kernel: {s} ({d:.2} us over {d} samples, {d} bytes)", .{
+            func.name, result.best_time_us, result.sample_count, artifact.bytes.len,
+        });
+
+        return make_kernel_artifact(artifact);
+    }
+
+    fn load_artifact(
+        self: *TvmProvider,
+        allocator: std.mem.Allocator,
+        shape: mm.Shape,
+        device: device_mod.Device,
+    ) kernel.CompileError!?mm.CachedArtifact {
+        return mm.load_artifact(
             self.io,
             allocator,
-            self.cache,
-            mm_shape,
+            &self.cache,
+            shape,
+            self.compile_config.compiler_fingerprint,
             self.compile_config.target,
-            selected_device,
+            device,
         ) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
@@ -140,55 +165,43 @@ pub const TvmProvider = struct {
                 return error.CompileFailed;
             },
         };
-        if (cached) |artifact| return make_kernel_artifact(artifact);
+    }
 
-        const result = mm.tune(
-            self.io,
-            allocator,
-            self.cache,
-            mm_shape,
-            .{
-                .compile = self.compile_config,
-                .device = selected_device,
-                .max_trials = self.max_trials,
-                .trials_per_iter = self.trials_per_iter,
-            },
-        ) catch |err| switch (err) {
+    fn tune(
+        self: *TvmProvider,
+        allocator: std.mem.Allocator,
+        shape: mm.Shape,
+        device: device_mod.Device,
+    ) kernel.CompileError!mm.TuneResult {
+        return mm.tune(self.io, allocator, &self.cache, shape, .{
+            .compile = self.compile_config,
+            .device = device,
+            .max_trials = self.max_trials,
+            .trials_per_iter = self.trials_per_iter,
+        }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.TvmLoadFailed => {
                 log.err("TVM runtime unavailable: {s}", .{@errorName(err)});
                 return error.ProviderLoadFailed;
             },
-            error.TvmCallFailed, error.TvmFunctionNotFound, error.UnexpectedTvmType => {
+            error.TvmCallFailed,
+            error.TvmFrontendCallFailed,
+            error.TvmInvalidErrorState,
+            error.TvmFunctionNotFound,
+            error.TvmValueAbsent,
+            error.TvmTypeMismatch,
+            error.TvmTypeInfoMissing,
+            error.TvmFieldNotFound,
+            error.TvmFieldUnreadable,
+            => {
                 log.err("TVM API call failed during tuning: {s}", .{@errorName(err)});
                 return error.ProviderCallFailed;
             },
             else => {
-                log.err("tuning failed: {s}", .{@errorName(err)});
+                log.err("TVM tuning failed: {s}", .{@errorName(err)});
                 return error.CompileFailed;
             },
         };
-
-        const artifact = mm.load_artifact(
-            self.io,
-            allocator,
-            self.cache,
-            mm_shape,
-            self.compile_config.target,
-            selected_device,
-        ) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                log.err("failed to read cached kernel: {s}", .{@errorName(err)});
-                return error.CompileFailed;
-            },
-        } orelse return error.CompileFailed;
-
-        log.info("compiled kernel: {s} (candidate {d}, {d:.2} us, {d} bytes)", .{
-            func.name, result.best_candidate, result.best_time_us, artifact.bytes.len,
-        });
-
-        return make_kernel_artifact(artifact);
     }
 };
 
@@ -198,14 +211,18 @@ pub const TvmProvider = struct {
 fn validate_matmul_function(func: pr.Function) ?mm.Shape {
     if (func.ops.len != 1) return null;
     if (func.params.len != 2 or func.returns.len != 1) return null;
-    return validate_matmul_op(func.ops[0]);
+    const op = func.ops[0];
+    const shape = validate_matmul_op(op) orelse return null;
+    if (op.inputs[0].value != func.params[0]) return null;
+    if (op.inputs[1].value != func.params[1]) return null;
+    if (op.outputs[0] != func.returns[0]) return null;
+    return shape;
 }
 
 fn validate_matmul_op(op: *const pr.Op) ?mm.Shape {
     if (!(pattern.Operation{
         .input_count = 2,
         .output_count = 1,
-        .first_output_dtype = .f32,
         .first_output_rank = 2,
     }).matches(op)) return null;
 
@@ -230,9 +247,13 @@ fn validate_matmul_op(op: *const pr.Op) ?mm.Shape {
     if (b.shape.dims[0] != k) return null;
     if (c_tensor.shape.dims[0] != m or c_tensor.shape.dims[1] != n) return null;
 
-    if (a.dtype != .f32 or b.dtype != .f32) return null;
+    if (a.dtype != b.dtype or a.dtype != c_tensor.dtype) return null;
+    switch (a.dtype) {
+        .f16, .f32 => {},
+        else => return null,
+    }
 
-    return .{ .m = m, .n = n, .k = k };
+    return .{ .m = m, .n = n, .k = k, .dtype = a.dtype };
 }
 
 fn make_kernel_artifact(artifact: mm.CachedArtifact) kernel.Artifact {
@@ -260,4 +281,53 @@ test "TVM discovery recognizes matrix matmul" {
         &.{pattern.Range{ .start = 0, .end = 1 }},
         matches.items,
     );
+}
+
+test "TVM discovery recognizes f16 matrix matmul" {
+    const testing = std.testing;
+    var program = pr.Program.init(testing.allocator);
+    defer program.deinit();
+    var builder = try pr.FunctionBuilder.init(&program, "main");
+    defer builder.deinit();
+    const lhs = try builder.param_tensor(.f16, &.{ 16, 16 });
+    const rhs = try builder.param_tensor(.f16, &.{ 16, 16 });
+    const output = try builder.mm(lhs, rhs);
+    const func = try builder.finish(.{ .returns = &.{output} });
+
+    var matches = std.ArrayList(kernel.Match).empty;
+    defer matches.deinit(testing.allocator);
+    try TvmProvider.discover_impl(undefined, func, &matches, testing.allocator);
+    try testing.expectEqualSlices(
+        kernel.Match,
+        &.{pattern.Range{ .start = 0, .end = 1 }},
+        matches.items,
+    );
+}
+
+test "TVM compilation requires a complete matrix matmul function" {
+    const testing = std.testing;
+
+    {
+        var program = pr.Program.init(testing.allocator);
+        defer program.deinit();
+        var builder = try pr.FunctionBuilder.init(&program, "wrong_return");
+        defer builder.deinit();
+        const lhs = try builder.param_tensor(.f32, &.{ 4, 4 });
+        const rhs = try builder.param_tensor(.f32, &.{ 4, 4 });
+        _ = try builder.mm(lhs, rhs);
+        const func = try builder.finish(.{ .returns = &.{lhs} });
+        try testing.expectEqual(null, validate_matmul_function(func));
+    }
+
+    {
+        var program = pr.Program.init(testing.allocator);
+        defer program.deinit();
+        var builder = try pr.FunctionBuilder.init(&program, "wrong_parameter_order");
+        defer builder.deinit();
+        const lhs = try builder.param_tensor(.f32, &.{ 4, 4 });
+        const rhs = try builder.param_tensor(.f32, &.{ 4, 4 });
+        const output = try builder.mm(rhs, lhs);
+        const func = try builder.finish(.{ .returns = &.{output} });
+        try testing.expectEqual(null, validate_matmul_function(func));
+    }
 }

@@ -24,6 +24,7 @@ pub fn export_shared(
         0,
     );
     defer allocator.free(host_object_path);
+    defer delete_temporary_file(io, host_object_path);
 
     try module.write_to_file(allocator, host_object_path, "o");
 
@@ -41,6 +42,7 @@ pub fn export_shared(
                 0,
             );
             defer allocator.free(device_object_path);
+            defer delete_temporary_file(io, device_object_path);
 
             var packed_module = try module.pack_imports_to_llvm(allocator);
             defer packed_module.deinit();
@@ -54,4 +56,14 @@ pub fn export_shared(
         },
     }
     log.info("exported {s}", .{output_path});
+}
+
+fn delete_temporary_file(io: std.Io, path: []const u8) void {
+    std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => log.warn("failed to remove temporary file '{s}': {s}", .{
+            path,
+            @errorName(err),
+        }),
+    };
 }
