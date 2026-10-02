@@ -185,8 +185,8 @@
 
     "tvm-python-cuda" = {
       requires = ["nvrtc"];
-      compile = [parts.tvmFullDev.dev];
-      runtime = [parts.tvmFullDev];
+      compile = [parts.tvm.dev];
+      runtime = [parts.tvm parts.tvm.python];
       features.withTvm = true;
       compatibility = [
         {
@@ -383,6 +383,26 @@
       "-Dcuda-runtime=${lib.boolToString featureArgs.withCudaRuntime}"
     ];
     zigFeatureFlags = lib.concatStringsSep " " zigFeatureArgs;
+    tvmCompilerFingerprint = builtins.hashString "sha256" (builtins.toJSON {
+      zigrad = "${zigradSrc}";
+      tvmCpu =
+        if has "tvm-cpu"
+        then "${parts.tvmCpu}"
+        else null;
+      tvmCuda =
+        if has "tvm-cuda" || has "tvm-python-cuda"
+        then "${parts.tvm}"
+        else null;
+      linker = "${parts.llvm}";
+      cudaIntrinsics =
+        if has "tvm-cuda" || has "tvm-python-cuda"
+        then "${parts.tvmCudaIntrinsics}"
+        else null;
+      cudaToolkit =
+        if has "tvm-cuda" || has "tvm-python-cuda"
+        then "${parts.cudaToolkit}"
+        else null;
+    });
     compatibility = lib.unique (
       lib.concatMap (node: (nodeFor node).compatibility or []) resolved
     );
@@ -394,7 +414,11 @@
           else "${externalInputs.runtime}/runtime/xla/pjrt/c/pjrt_c_api_cpu_plugin.so";
       }
       // lib.optionalAttrs (has "tvm-cpu" || has "tvm-cuda" || has "tvm-python-cuda") {
+        ZG_TVM_COMPILER_FINGERPRINT = tvmCompilerFingerprint;
         ZG_ELF_LINKER_PATH = "${parts.llvm}/bin/ld.lld";
+      }
+      // lib.optionalAttrs (has "tvm-cuda" || has "tvm-python-cuda") {
+        ZG_TVM_CUDA_INTRINSICS_PATH = "${parts.tvmCudaIntrinsics}/share/tvm/cuda_tensor_intrinsics.json";
       }
       // lib.optionalAttrs (has "iree-compiler-cpu" || has "iree-compiler-cuda") {
         ZG_IREE_COMPILER_PATH =

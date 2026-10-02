@@ -1,145 +1,62 @@
-#!/usr/bin/env python3
-"""Generate pre-serialized CUDA tensor intrinsics for Zig to load at runtime.
+"""Serialize TVM's CUDA tensor intrinsics for native registration."""
 
-Extracts all CUDA tensor intrinsics registered by TVM's Python module and serializes
-them to JSON files so we dont need python at runtime.
-"""
-
-import contextlib
-import tvm
-from tvm.tir import TensorIntrin
-from tvm.tir.tensor_intrin import cuda  # Triggers intrinsic registration
+import argparse
+import importlib
 import json
-import os
 from pathlib import Path
 
+from tvm.tir import PrimFunc, TensorIntrin
 
-def main():
-    output_dir = Path("artifacts/cuda_intrinsics")
-    output_dir.mkdir(parents=True, exist_ok=True)
+import tvm
 
-    # get all CUDA intrinsic names from the module
-    intrinsic_names = set()
 
-    # 1. Get constants defined in cuda module
-    for attr in dir(cuda):
-        if attr.endswith("_INTRIN") and not attr.startswith("_"):
-            value = getattr(cuda, attr)
-            if isinstance(value, str):
-                intrinsic_names.add(value)
+def registered_cuda_intrinsics() -> dict[str, TensorIntrin]:
+    """Replay TVM's CUDA module and capture each registered intrinsic."""
+    registrations: dict[str, TensorIntrin] = {}
+    register = TensorIntrin.register
+    enabled = tvm.runtime.enabled
 
-    # 2. Search for dynamically registered MMA intrinsics
-    # these dont have constants but are registered at import time
-    shapes = [(16, 8, 8), (16, 8, 16), (8, 8, 16), (16, 16, 16), (8, 8, 32)]
-    dtypes = ["f16", "f32", "i8", "i32", "s8", "s32", "s4"]
-    prefixes = ["mma_init", "mma_fill", "mma_load", "mma_store", "mma_sync"]
-    suffixes = [
-        "",
-        "_A",
-        "_B",
-        "_C",
-        "_A_shared",
-        "_B_shared",
-        "_C_shared",
-        "_A_shared_dyn",
-        "_B_shared_dyn",
-        "_global",
-        "_shared_dyn",
-    ]
+    def capture(
+        name: str,
+        desc: PrimFunc,
+        impl: PrimFunc,
+        override: bool = False,
+    ) -> TensorIntrin:
+        if name in registrations and not override:
+            raise RuntimeError(f"duplicate TensorIntrin registration: {name}")
+        intrinsic = TensorIntrin(desc, impl)
+        registrations[name] = intrinsic
+        return register(name, desc, impl, override=True)
 
-    # single-dtype pattern (for init, fill, load, store)
-    for m, n, k in shapes:
-        for dtype in dtypes:
-            for prefix in ["mma_init", "mma_fill", "mma_load", "mma_store"]:
-                for suffix in suffixes:
-                    name = f"{prefix}_m{m}n{n}k{k}_{dtype}{suffix}"
-                    with contextlib.suppress(Exception):
-                        TensorIntrin.get(name)
-                        intrinsic_names.add(name)
+    TensorIntrin.register = staticmethod(capture)
+    # The package initializer always imports CUDA, then conditionally imports
+    # target-specific CPU modules using this feature probe.
+    tvm.runtime.enabled = lambda _: False
+    try:
+        importlib.import_module("tvm.tir.tensor_intrin.cuda")
+    finally:
+        TensorIntrin.register = staticmethod(register)
+        tvm.runtime.enabled = enabled
 
-    # three-dtype pattern for mma_sync (input_A, input_B, output_C types)
-    # common combinations
-    sync_dtype_combos = [
-        "f16f16f16",
-        "f16f16f32",
-        "s8s8s32",
-        "s4s4s32",
-        "i8i8i32",
-        "i8i8i32",
-    ]
-    for m, n, k in shapes:
-        for dtype_combo in sync_dtype_combos:
-            for suffix in suffixes:
-                name = f"mma_sync_m{m}n{n}k{k}_{dtype_combo}{suffix}"
-                with contextlib.suppress(Exception):
-                    TensorIntrin.get(name)
-                    intrinsic_names.add(name)
+    return registrations
 
-    intrinsic_names = sorted(intrinsic_names)
 
-    print(f"Generating {len(intrinsic_names)} CUDA tensor intrinsics...")
-    print(f"Output directory: {output_dir}")
-    print()
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
 
-    generated = []
-    failed = []
+    entries = []
+    for name, intrinsic in sorted(registered_cuda_intrinsics().items()):
+        entries.extend((name, intrinsic))
+    if not entries:
+        raise RuntimeError("TVM registered no CUDA tensor intrinsics")
 
-    for intrinsic_id in intrinsic_names:
-        try:
-            # get the registered intrinsic (already registered by import)
-            intrin = TensorIntrin.get(intrinsic_id)
-
-            # extract desc and impl PrimFuncs
-            desc = intrin.desc
-            impl = intrin.impl
-
-            # serialize to json w tvm
-            desc_json = tvm.ir.save_json(desc)
-            impl_json = tvm.ir.save_json(impl)
-
-            intrinsic_data = {
-                "name": intrinsic_id,
-                "desc": desc_json,
-                "impl": impl_json,
-            }
-
-            output_file = output_dir / f"{intrinsic_id}.json"
-            output_file.write_text(json.dumps(intrinsic_data, indent=2))
-
-            size_kb = (len(desc_json) + len(impl_json)) / 1024
-            generated.append(intrinsic_id)
-            print(f"\N{CHECK MARK} {intrinsic_id:40s} {size_kb:6.1f} KB")
-
-        except Exception as e:
-            failed.append((intrinsic_id, str(e)))
-            print(f"\N{BALLOT X} {intrinsic_id:40s} FAILED: {e}")
-
-    total_size = sum(
-        os.path.getsize(output_dir / f)
-        for f in os.listdir(output_dir)
-        if f.endswith(".json")
-    )
-
-    print()
-    print("=" * 60)
-    print(
-        f"\N{CHECK MARK} Generated {len(generated)}/{len(intrinsic_names)} intrinsics"
-    )
-    print(
-        f"  Total size: {total_size / 1024:.1f} KB ({total_size / (1024 * 1024):.2f} MB)"
-    )
-    print(f"  Output: {output_dir}")
-
-    if failed:
-        print(f"\n\N{BALLOT X} Failed: {len(failed)}")
-        for name, error in failed:
-            print(f"  - {name}: {error}")
-        return 1
-
-    return 0
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    serialized = tvm.ir.save_json(tvm.runtime.convert(entries))
+    args.output.write_text(json.dumps(json.loads(serialized), separators=(",", ":")))
+    print(f"serialized {len(entries) // 2} CUDA tensor intrinsics to {args.output}")
 
 
 if __name__ == "__main__":
-    import sys
-
-    sys.exit(main())
+    main()

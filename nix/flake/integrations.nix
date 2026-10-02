@@ -153,7 +153,7 @@ in {
       inherit cudaRuntime;
       source = externalSources.tvm;
     };
-    inherit (tvmParts) tvm tvmCpu tvmFullDev;
+    inherit (tvmParts) tvm tvmCpu tvmCudaIntrinsics;
 
     iree = import ./integrations/iree.nix {
       inherit
@@ -199,7 +199,7 @@ in {
           pjrtHeaders
           tvm
           tvmCpu
-          tvmFullDev
+          tvmCudaIntrinsics
           xlaMlirStablehloCapiSdk
           xlaPjrtPlugins
           xlaPjrtPluginsCuda
@@ -252,7 +252,8 @@ in {
         inherit llvm tvm;
         tvm-dev = tvm.dev;
         tvm-cpu = tvmCpu;
-        tvm-full-dev = tvmFullDev.dev;
+        tvm-python = tvm.python;
+        tvm-cuda-intrinsics = tvmCudaIntrinsics;
         cuda-redist = cudaRuntime;
         cuda-redist-dev = cudaToolkit;
         cuda-redist-xla-runtime = xlaCudaRuntime;

@@ -30,9 +30,7 @@
   enableCublas ? false,
   enableCudnn ? false,
   enableCutlass ? false,
-  # When true, build & install TVM's Python/FFI bindings. Independent from the
-  #  `out`/`dev` output split: this controls *what gets compiled*, while outputs
-  #  control *which built artifacts go where*.
+  # Build and install TVM's Python package in a separate output.
   withPythonBindings ? false,
   # When true: RelWithDebInfo, retain DWARF, don't strip.
   # When false (default, production): Release, NDEBUG, stripped.
@@ -75,7 +73,9 @@ in
     stdenv.mkDerivation {
       pname = "tvm";
       inherit src version;
-      outputs = ["out" "dev"];
+      outputs =
+        ["out" "dev"]
+        ++ lib.optional withPythonBindings "python";
 
       strictDeps = true;
       # Strip libtvm.so etc. so debug-info path strings (e.g. cmake's CUDA
@@ -102,13 +102,13 @@ in
           cmake
           ninja
           python3
-          python3.pkgs.cython # Required to build tvm_ffi Cython extension (core.pyx)
           pkg-config
           git
           patchelf
           patch
           llvmDev # Provides llvm-config (either custom LLVM or llvmPackages.llvm.dev)
         ]
+        ++ lib.optional withPythonBindings python3.pkgs.cython
         ++ lib.optionals cudaEnabled [
           autoAddDriverRunpath # automatically patches rpath to include /run/opengl-driver for libcuda.so
           # nvcc invokes cudafe++/cicc/ptxas/etc. as bare command names via PATH.
@@ -137,8 +137,7 @@ in
           ++ [cudaToolkit]
         );
 
-      # Note: Using `.` (current dir) for cmake -S because postPatch patches the source in-place
-      # and using ${src} would reference the unpatched original source in the nix store.
+      # Configure the patched source tree in place.
       configurePhase = ''
         set -euo pipefail
 
@@ -213,14 +212,10 @@ in
         cmake --build build --parallel $NIX_BUILD_CORES
       '';
 
-      # Note: we only ship headers + shared libs by default.
-      # Python/ffi bindings included when withPythonBindings=true.
       installPhase = ''
         set -euo pipefail
 
         mkdir -p $out/lib $dev/include
-
-        # No custom headers needed - NVRTC uses CUDA's bundled libcxx
 
         for f in build/libtvm* build/libtvm_runtime*; do
           if [ -e "$f" ]; then
@@ -240,8 +235,7 @@ in
           echo "This may cause Python imports to fail if core.abi3.so depends on it"
         fi
 
-        # v0.22+: TVM runtime depends on a separate libtvm_ffi.so.
-        # It may live under build/3rdparty/tvm-ffi/, so copy it explicitly.
+        # TVM FFI may place its shared library under its subproject build tree.
         if [ ! -e "$out/lib/libtvm_ffi.so" ]; then
           found="$(find build -type f -name 'libtvm_ffi.so*' | head -n1 || true)"
           if [ -n "$found" ]; then
@@ -290,39 +284,30 @@ in
         done
 
         ${lib.optionalString withPythonBindings ''
-          echo "Including Python bindings (withPythonBindings=true)"
-          mkdir -p $out/python
+          echo "Installing Python bindings"
+          mkdir -p $python/python
 
-          # Copy main TVM Python package
-          cp -r python/tvm $out/python/
+          cp -r python/tvm $python/python/
 
-          # Copy tvm_ffi from 3rdparty
           if [ -d 3rdparty/tvm-ffi/python/tvm_ffi ]; then
-            cp -r 3rdparty/tvm-ffi/python/tvm_ffi $out/python/
+            cp -r 3rdparty/tvm-ffi/python/tvm_ffi $python/python/
           fi
 
-          # Copy compiled Cython extension (core*.so) to tvm_ffi/
-          # This is built by TVM_FFI_BUILD_PYTHON_MODULE and is required for Python imports
           echo "Searching for Cython core extension..."
           find build -name "core*.so" -type f
           core_so="$(find build -name "core*.so" -type f | head -n1 || true)"
           if [ -n "$core_so" ] && [ -f "$core_so" ]; then
-            cp -v "$core_so" $out/python/tvm_ffi/
+            cp -v "$core_so" $python/python/tvm_ffi/
 
-            # Patch RPATH to find libtvm_ffi.so in $out/lib (two directories up)
-            # The Cython module is at $out/python/tvm_ffi/core.abi3.so
-            # libtvm_ffi.so is at $out/lib/libtvm_ffi.so
-            # So we need $ORIGIN/../../lib
-            patchelf --set-rpath "\$ORIGIN/../../lib:$rpath" "$out/python/tvm_ffi/$(basename "$core_so")"
+            patchelf --set-rpath "$out/lib:$rpath" "$python/python/tvm_ffi/$(basename "$core_so")"
 
             echo "Installed Cython core extension: $core_so"
           else
-            echo "WARNING: Cython core extension not found - Python imports will fail"
-            echo "Expected location: build/3rdparty/tvm-ffi/core.abi3.so"
+            echo "TVM FFI Python extension was not built" >&2
+            exit 1
           fi
 
-          # Make bindings writable for any post-install modifications
-          chmod -R u+w $out/python
+          chmod -R u+w $python/python
         ''}
 
         # Restore -u to default so fixupPhase's strip-hook (which references an
