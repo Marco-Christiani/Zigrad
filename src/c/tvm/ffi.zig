@@ -7,7 +7,7 @@
 const std = @import("std");
 const c = @import("c.zig");
 
-const log = std.log.scoped(.@"zg/tvm_api");
+const log = std.log.scoped(.@"zg/tvm_ffi");
 
 /// TVM `AnyView` representation.
 pub const Value = struct {
@@ -774,10 +774,7 @@ fn find_direct_field(type_info: *const c.TVMFFITypeInfo, field_name: []const u8)
 /// Uses `ffi.FunctionListGlobalNamesFunctor` to enumerate all registered
 /// TVM functions. The caller frees the slice and each name.
 pub fn list_global_names(allocator: std.mem.Allocator) ![][]const u8 {
-    var functor = try call_global(allocator, "ffi.FunctionListGlobalNamesFunctor", &.{});
-    defer functor.deinit();
-
-    var function = try PackedFunction.take(&functor);
+    var function = try call_global_take(PackedFunction, allocator, "ffi.FunctionListGlobalNamesFunctor", &.{});
     defer function.deinit();
 
     // functor(-1) returns the count
