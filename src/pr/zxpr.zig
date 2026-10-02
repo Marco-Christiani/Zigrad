@@ -1,7 +1,7 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 
-pub const OutputTarget = @import("../output.zig").Target;
+pub const OutputTarget = @import("output").Target;
 const json = @import("json.zig");
 const pr = @import("pr.zig");
 const serialize = @import("serialize.zig");
@@ -177,7 +177,7 @@ test "zxpr with transpose shows permutation" {
 }
 
 test "zxpr kernelize region annotations" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     var program = pr.Program.init(std.testing.allocator);
     defer program.deinit();
 

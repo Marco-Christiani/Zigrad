@@ -1,7 +1,7 @@
 //! StableHLO compilation for a PJRT client.
 
 const std = @import("std");
-const compilation = @import("../compilation.zig");
+const compilation = @import("compilation");
 const stablehlo = @import("../stablehlo.zig");
 const client_mod = @import("client.zig");
 const Execution = @import("execution.zig").Execution;

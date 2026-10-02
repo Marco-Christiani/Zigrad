@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const cuda_nvrtc = @import("../cuda/nvrtc.zig");
-const device_mod = @import("../device.zig");
+const device_mod = @import("device");
 const runtime = @import("../runtime.zig");
 const linker = @import("../toolchain/linker.zig");
 

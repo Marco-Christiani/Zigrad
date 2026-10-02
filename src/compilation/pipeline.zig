@@ -3,7 +3,7 @@
 const std = @import("std");
 const Context = @import("context.zig").Context;
 const operation = @import("operation.zig");
-const rtti = @import("../utils/rtti.zig");
+const rtti = @import("rtti");
 const ErasedBox = rtti.ErasedBox;
 
 const log = std.log.scoped(.@"zg/pipeline");

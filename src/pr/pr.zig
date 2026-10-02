@@ -14,7 +14,7 @@ const ops = @import("ops/ops.zig");
 const pr_log = std.log.scoped(.@"zg/pr");
 const Allocator = std.mem.Allocator;
 
-pub const DType = @import("../dtype.zig").DType;
+pub const DType = @import("dtype").DType;
 
 /// Shape represented by a dimension slice.
 pub const Shape = struct {
@@ -1756,7 +1756,7 @@ pub const FunctionBuilder = struct {
 
 test {
     std.testing.refAllDecls(@This());
-    _ = @import("tests/eval.zig");
+    _ = @import("pr_eval");
     _ = @import("tests/grad_check.zig");
 }
 
@@ -2258,7 +2258,7 @@ test "Literal.from_f64 tags by DType" {
 }
 
 test "region push/pop materializes regions" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -2325,7 +2325,7 @@ test "region annotation names are unique" {
 }
 
 test "nested regions" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     const outline = @import("transform/outline.zig");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
@@ -2366,7 +2366,7 @@ test "nested regions" {
 }
 
 test "regions_matching filters by predicate" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     const outline = @import("transform/outline.zig");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
@@ -2400,7 +2400,7 @@ test "regions_matching filters by predicate" {
 }
 
 test "empty region not materialized" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 

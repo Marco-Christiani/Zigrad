@@ -7,7 +7,7 @@
 //!
 const std = @import("std");
 
-const pr = @import("../pr/pr.zig");
+const pr = @import("pr");
 const mlir = @import("../c/mlir/mlir.zig");
 const MlirSession = @import("session.zig").Session;
 

@@ -1,7 +1,7 @@
 //! Out-of-process IREE compilation behind a pure Zig contract.
 
 const std = @import("std");
-const compilation = @import("../compilation.zig");
+const compilation = @import("compilation");
 const stablehlo = @import("../stablehlo.zig");
 const CompilerConfig = @import("config.zig").CompilerConfig;
 

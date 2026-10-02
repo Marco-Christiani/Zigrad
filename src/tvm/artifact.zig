@@ -5,7 +5,7 @@ const tvm_runtime = @import("../c/tvm/runtime.zig");
 const RuntimeModule = tvm_runtime.RuntimeModule;
 const TargetKind = @import("config.zig").TargetKind;
 const Cache = @import("../cache.zig").Cache;
-const DType = @import("../dtype.zig").DType;
+const DType = @import("dtype").DType;
 const export_mod = @import("export.zig");
 const Linker = @import("../toolchain/linker.zig").Linker;
 

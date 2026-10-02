@@ -2,10 +2,10 @@
 
 const std = @import("std");
 
-const compilation = @import("../compilation.zig");
+const compilation = @import("compilation");
 const LoadedProgram = @import("../execution.zig").LoadedProgram;
 const hlo_decode = @import("../c/xla/hlo_decode.zig");
-const output = @import("../output.zig");
+const output = @import("output");
 const Execution = @import("execution.zig").Execution;
 
 const log = std.log.scoped(.@"zg/pjrt_dump");

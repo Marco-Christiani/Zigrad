@@ -6,14 +6,14 @@ const std = @import("std");
 
 pub const build_options = @import("build_options");
 
-pub const pr = @import("pr.zig");
-pub const kernel = @import("kernel.zig");
-pub const device = @import("device.zig");
-pub const dtype = @import("dtype.zig");
-pub const compilation = @import("compilation.zig");
+pub const pr = @import("pr");
+pub const kernel = @import("kernel");
+pub const device = @import("device");
+pub const dtype = @import("dtype");
+pub const compilation = @import("compilation");
 pub const toolchain = @import("toolchain.zig");
 pub const backend = @import("backend.zig");
-pub const output = @import("output.zig");
+pub const output = @import("output");
 pub const transforms = @import("transforms.zig");
 pub const optim = @import("optim.zig");
 pub const train = @import("train.zig");

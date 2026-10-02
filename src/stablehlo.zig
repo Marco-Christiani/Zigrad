@@ -1,8 +1,8 @@
 //! Serialized StableHLO artifacts and output operations.
 
 const std = @import("std");
-const compilation = @import("compilation.zig");
-const output = @import("output.zig");
+const compilation = @import("compilation");
+const output = @import("output");
 
 /// Backend-configuration field carrying an opaque PR custom-call payload.
 pub const custom_call_payload_name = "zigrad.payload";

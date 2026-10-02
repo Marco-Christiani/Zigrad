@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const compilation = @import("../compilation.zig");
-const output = @import("../output.zig");
+const compilation = @import("compilation");
+const output = @import("output");
 const pr = @import("pr.zig");
 const zxpr = @import("zxpr.zig");
 

@@ -2,7 +2,7 @@
 const std = @import("std");
 const stz = @import("safetensors_zg");
 const Tensor = @import("../tensor.zig");
-const DType = @import("../pr/pr.zig").DType;
+const DType = @import("pr").DType;
 
 /// Parsed SafeTensors storage accepted by `from_safetensors`.
 pub const SafeTensorsFile = stz.SafeTensorsFile;

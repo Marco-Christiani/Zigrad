@@ -20,7 +20,7 @@
 const std = @import("std");
 
 const callable = @import("callable.zig");
-const pr = @import("pr/pr.zig");
+const pr = @import("pr");
 const Tensor = @import("tensor.zig");
 const TensorTree = @import("utils.zig").Tree(Tensor);
 

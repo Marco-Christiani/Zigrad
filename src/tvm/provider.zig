@@ -3,14 +3,14 @@
 //! The provider accepts PR matrix-multiply functions and emits kernel artifacts
 //!  through MetaSchedule autotuning. TVM C types remain internal.
 const std = @import("std");
-const contraction = @import("../pr/analysis/contraction.zig");
-const pattern = @import("../pr/analysis/pattern.zig");
+const contraction = @import("pr").analysis.contraction;
+const pattern = @import("pr").analysis.pattern;
 
 const Cache = @import("../cache.zig").Cache;
-const device_mod = @import("../device.zig");
-const kernel = @import("../kernel.zig");
-const pr = @import("../pr/pr.zig");
-const TypedPtr = @import("../utils/rtti.zig").TypedPtr;
+const device_mod = @import("device");
+const kernel = @import("kernel");
+const pr = @import("pr");
+const TypedPtr = @import("rtti").TypedPtr;
 const config = @import("config.zig");
 const mm = @import("matmul.zig");
 const tvm_runtime = @import("runtime.zig");

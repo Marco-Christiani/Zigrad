@@ -4,7 +4,7 @@
 //! `Tensor.to_device` uploads this storage through an `Executor`.
 //! TODO(organization): Move this framework value out of `utils`.
 const std = @import("std");
-const pr = @import("../pr/pr.zig");
+const pr = @import("pr");
 
 const DType = pr.DType;
 const Shape = pr.Shape;

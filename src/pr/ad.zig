@@ -1110,7 +1110,7 @@ test "linearize separates residuals from tangent inputs" {
     try std.testing.expectEqual(@as(usize, 2), linear.params.len);
     try std.testing.expectEqual(@as(usize, 1), linear.returns.len);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(std.testing.allocator, &.{}, &.{3.0});
     defer primal.deinit();
     const primal_results = try pr_eval.eval(
@@ -1168,7 +1168,7 @@ test "linearize carries structural zero through a predicate broadcast" {
     );
     const differentiated = program.get_function_by_id(differentiated_id).?;
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(
         std.testing.allocator,
         &.{2},
@@ -1235,7 +1235,7 @@ test "jvp preserves structural zero across an inactive call" {
     try std.testing.expectEqual(@as(usize, 2), differentiated.params.len);
     try std.testing.expectEqual(@as(usize, 1), differentiated.returns.len);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(
         std.testing.allocator,
         &.{},
@@ -1352,7 +1352,7 @@ test "AD omits dual values for discrete parameters and results across calls" {
     try std.testing.expectEqual(@as(usize, 4), vjp_func.params.len);
     try std.testing.expectEqual(@as(usize, 2), vjp_func.returns.len);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var condition = try pr_eval.HostTensor.init_with_data(
         std.testing.allocator,
         &.{2},
@@ -1522,7 +1522,7 @@ test "vjp selects output cotangent seeds" {
     try std.testing.expectEqual(@as(usize, 2), vjp_func.params.len);
     try std.testing.expectEqual(@as(usize, 1), vjp_func.returns.len);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(std.testing.allocator, &.{}, &.{3.0});
     defer primal.deinit();
     var seed = try pr_eval.HostTensor.init_with_data(std.testing.allocator, &.{}, &.{1.0});
@@ -1820,7 +1820,7 @@ test "vjp composes through repeated calls" {
     try std.testing.expectEqual(@as(usize, 2), differentiated.params.len);
     try std.testing.expectEqual(@as(usize, 1), differentiated.returns.len);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(std.testing.allocator, &.{}, &.{3.0});
     defer primal.deinit();
     var seed = try pr_eval.HostTensor.init_with_data(std.testing.allocator, &.{}, &.{1.0});
@@ -1868,7 +1868,7 @@ test "AD carries call results into nonlinear consumers" {
     const differentiated = program.get_function_by_id(differentiated_id).?;
     try pr.validate_program(&program);
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var primal = try pr_eval.HostTensor.init_with_data(
         std.testing.allocator,
         &.{},
@@ -1961,7 +1961,7 @@ test "jvp routes maximum tangents through the selected operand" {
     );
     const differentiated = program.get_function_by_id(differentiated_id).?;
 
-    const pr_eval = @import("tests/eval.zig");
+    const pr_eval = @import("pr_eval");
     var lhs_value = try pr_eval.HostTensor.init_with_data(
         std.testing.allocator,
         &.{2},

@@ -1,6 +1,6 @@
 const std = @import("std");
-const device = @import("../device.zig");
-const kernel = @import("../kernel.zig");
+const device = @import("device");
+const kernel = @import("kernel");
 const mirage = @import("../c/mirage/api.zig");
 const cuda_driver = @import("../cuda/driver.zig");
 const cuda_nvrtc = @import("../cuda/nvrtc.zig");
@@ -8,7 +8,7 @@ const artifact = @import("artifact.zig");
 const Artifact = artifact.Artifact;
 const KernelDesc = artifact.KernelDesc;
 const CompileConfig = @import("config.zig").CompileConfig;
-const TypedPtr = @import("../utils/rtti.zig").TypedPtr;
+const TypedPtr = @import("rtti").TypedPtr;
 
 const log = std.log.scoped(.@"zg/mirage_dispatch");
 

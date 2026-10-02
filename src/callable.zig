@@ -36,7 +36,7 @@
 //!
 const std = @import("std");
 
-const pr = @import("pr/pr.zig");
+const pr = @import("pr");
 const Executor = @import("execution.zig");
 const Tensor = @import("tensor.zig");
 const utils = @import("utils.zig");
@@ -211,7 +211,7 @@ test "Compiled.call waits before releasing an execution event" {
             return @fieldParentPtr("interface", interface);
         }
 
-        fn upload(_: *Executor, _: []const u8, _: @import("dtype.zig").DType, _: []const i64) Executor.Error!Executor.Buffer {
+        fn upload(_: *Executor, _: []const u8, _: @import("dtype").DType, _: []const i64) Executor.Error!Executor.Buffer {
             return error.Unsupported;
         }
 

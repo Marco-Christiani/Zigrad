@@ -3,7 +3,7 @@
 //! Evaluates a PR Function on concrete f32 data without requiring a backend.
 //! Purely a test utility used for numerical checks for AD correctness.
 const std = @import("std");
-const pr = @import("../pr.zig");
+const pr = @import("pr");
 const log = std.log.scoped(.@"zg/eval");
 
 // HostTensor

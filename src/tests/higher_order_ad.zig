@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const pr = @import("../pr/pr.zig");
-const ad = @import("../pr/ad.zig");
-const pr_eval = @import("../pr/tests/eval.zig");
+const pr = @import("pr");
+const ad = @import("pr").ad;
+const pr_eval = @import("pr_eval");
 const Tensor = @import("../tensor.zig");
 const trace = @import("../trace.zig").trace;
 const transforms = @import("../transforms.zig");

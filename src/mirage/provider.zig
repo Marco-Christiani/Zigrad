@@ -1,14 +1,14 @@
 const std = @import("std");
-const contraction = @import("../pr/analysis/contraction.zig");
-const pattern = @import("../pr/analysis/pattern.zig");
-const device = @import("../device.zig");
-const kernel = @import("../kernel.zig");
-const pr = @import("../pr/pr.zig");
+const contraction = @import("pr").analysis.contraction;
+const pattern = @import("pr").analysis.pattern;
+const device = @import("device");
+const kernel = @import("kernel");
+const pr = @import("pr");
 const dispatch_mod = @import("dispatch.zig");
 const artifact_mod = @import("artifact.zig");
 const config = @import("config.zig");
 const mirage = @import("../c/mirage/api.zig");
-const TypedPtr = @import("../utils/rtti.zig").TypedPtr;
+const TypedPtr = @import("rtti").TypedPtr;
 
 const log = std.log.scoped(.@"zg/mirage_provider");
 const gated_mlp_op_count: usize = 5;

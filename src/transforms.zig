@@ -27,9 +27,9 @@
 //! const exe = try pipeline.run(zg.Executor.LoadedProgram, &traced.program, &ctx);
 //! ```
 const std = @import("std");
-const pr = @import("pr/pr.zig");
-const ad = @import("pr/ad.zig");
-const ops = @import("pr/ops/ops.zig");
+const pr = @import("pr");
+const ad = @import("pr").ad;
+const ops = @import("pr").ops;
 const utils = @import("utils.zig");
 const meta = utils.meta;
 const Tree = utils.Tree;

@@ -2,8 +2,8 @@
 
 const std = @import("std");
 
-const device_mod = @import("../device.zig");
-const DType = @import("../dtype.zig").DType;
+const device_mod = @import("device");
+const DType = @import("dtype").DType;
 const Executor = @import("../execution.zig");
 const config = @import("config.zig");
 const runtime = @import("runtime.zig");

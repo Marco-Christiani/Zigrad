@@ -7,8 +7,8 @@
 //! Every variant exposes `dtype` and `shape` directly. Traced tensors copy these
 //!  values from `Var.aval` when constructed.
 const std = @import("std");
-const pr = @import("pr/pr.zig");
-const DType = @import("dtype.zig").DType;
+const pr = @import("pr");
+const DType = @import("dtype").DType;
 const Executor = @import("execution.zig");
 const utils = @import("utils.zig");
 const HostBuffer = utils.HostBuffer;

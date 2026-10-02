@@ -2,11 +2,11 @@
 
 const std = @import("std");
 
-const device_mod = @import("../device.zig");
-const kernel = @import("../kernel.zig");
+const device_mod = @import("device");
+const kernel = @import("kernel");
 const mlir = @import("../mlir.zig");
-const fingerprint = @import("../pr/analysis/fingerprint.zig");
-const pr = @import("../pr/pr.zig");
+const fingerprint = @import("pr").analysis.fingerprint;
+const pr = @import("pr");
 const measurer = @import("../tune/measurer.zig");
 const client_mod = @import("client.zig");
 const Execution = @import("execution.zig").Execution;

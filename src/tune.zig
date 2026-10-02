@@ -23,10 +23,10 @@
 //! ```
 
 const std = @import("std");
-const device = @import("device.zig");
-const fingerprint = @import("pr/analysis/fingerprint.zig");
-const pr = @import("pr/pr.zig");
-const kernel = @import("kernel.zig");
+const device = @import("device");
+const fingerprint = @import("pr").analysis.fingerprint;
+const pr = @import("pr");
+const kernel = @import("kernel");
 const measurement = @import("tune/measurer.zig");
 
 const log = std.log.scoped(.@"zg/tune");
@@ -824,12 +824,12 @@ fn discover_and_extract(
     program: *pr.Program,
     providers: []const kernel.KernelProvider,
 ) !kernel.ExtractedCandidates {
-    const kernelize = @import("pr/transform/kernelize.zig");
+    const kernelize = @import("pr").transform.kernelize;
     var discovered = kernel.Candidates.init(std.testing.allocator);
     defer discovered.deinit();
     var extracted = kernel.ExtractedCandidates.init(std.testing.allocator);
     errdefer extracted.deinit();
-    var context = @import("compilation.zig").Context{
+    var context = @import("compilation").Context{
         .allocator = std.testing.allocator,
         .io = std.testing.io,
     };

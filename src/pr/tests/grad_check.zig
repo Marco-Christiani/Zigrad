@@ -4,7 +4,7 @@
 //!  (central finite differences) to verify AD correctness.
 const std = @import("std");
 const pr = @import("../pr.zig");
-const pr_eval = @import("eval.zig");
+const pr_eval = @import("pr_eval");
 const ad = @import("../ad.zig");
 const log = std.log.scoped(.@"zg/grad_check");
 

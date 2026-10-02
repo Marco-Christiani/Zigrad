@@ -52,7 +52,7 @@ pub const TrainState = struct {
     donated_input_indices: []usize,
     /// DType of the loss output (output[0]). Used to wrap the raw buffer
     ///  as a Tensor in `StepResult`.
-    loss_dtype: @import("pr/pr.zig").DType,
+    loss_dtype: @import("pr").DType,
     allocator: std.mem.Allocator,
 
     pub const StepResult = struct {
@@ -83,7 +83,7 @@ pub const TrainState = struct {
         /// DType of the loss output (output[0]). Defaults to f32.
         /// Override for mixed-precision training (e.g. bf16 loss with
         ///  f32 upcast).
-        loss_dtype: @import("pr/pr.zig").DType = .f32,
+        loss_dtype: @import("pr").DType = .f32,
     };
 
     pub fn init(

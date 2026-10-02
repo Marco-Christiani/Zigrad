@@ -1,7 +1,7 @@
 //! IREE terminal backend composition.
 
 const backend_mod = @import("../backend.zig");
-const compilation = @import("../compilation.zig");
+const compilation = @import("compilation");
 const Executor = @import("../execution.zig");
 const stablehlo = @import("../stablehlo.zig");
 const compiler_mod = @import("compiler.zig");

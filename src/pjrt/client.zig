@@ -6,8 +6,8 @@
 // TODO(pjrt): Verify the async contract before exposing async manager APIs.
 const std = @import("std");
 
-const device_mod = @import("../device.zig");
-const DType = @import("../dtype.zig").DType;
+const device_mod = @import("device");
+const DType = @import("dtype").DType;
 const stablehlo = @import("../stablehlo.zig");
 const dispatch = @import("kernel_dispatch.zig");
 pub const config = @import("config.zig");

@@ -1,7 +1,7 @@
 //! Default validated PR to StableHLO pipeline segment.
 
-const compilation = @import("../../compilation.zig");
-const pr = @import("../../pr.zig");
+const compilation = @import("compilation");
+const pr = @import("pr");
 const stablehlo = @import("../../stablehlo.zig");
 const lower = @import("lower.zig");
 

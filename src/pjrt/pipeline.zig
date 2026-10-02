@@ -1,7 +1,7 @@
 //! Default PR to PJRT pipeline composition.
 
 const std = @import("std");
-const compilation = @import("../compilation.zig");
+const compilation = @import("compilation");
 const stablehlo_pipeline = @import("../mlir/stablehlo/pipeline.zig");
 const Backend = @import("backend.zig").Backend;
 

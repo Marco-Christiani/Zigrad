@@ -1,5 +1,5 @@
 const std = @import("std");
-const device = @import("../device.zig");
+const device = @import("device");
 
 /// Services available while running compilation operations.
 pub const Context = struct {

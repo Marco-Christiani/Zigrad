@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-const compilation = @import("compilation.zig");
+const compilation = @import("compilation");
 const Executor = @import("execution.zig");
 
 /// Failures exposed by terminal compilation, loading, and execution.
@@ -79,7 +79,7 @@ test "Backend implementations share one selectable contract" {
             .release_program = release_program,
         };
 
-        fn upload(_: *Executor, _: []const u8, _: @import("dtype.zig").DType, _: []const i64) Executor.Error!Executor.Buffer {
+        fn upload(_: *Executor, _: []const u8, _: @import("dtype").DType, _: []const i64) Executor.Error!Executor.Buffer {
             return error.Unsupported;
         }
         fn download(_: *Executor, _: Executor.Buffer, _: []u8) Executor.Error!?Executor.Event {

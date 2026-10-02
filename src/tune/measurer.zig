@@ -2,10 +2,10 @@
 
 const std = @import("std");
 
-const device_mod = @import("../device.zig");
+const device_mod = @import("device");
 const Executor = @import("../execution.zig");
-const kernel = @import("../kernel.zig");
-const pr = @import("../pr/pr.zig");
+const kernel = @import("kernel");
+const pr = @import("pr");
 const HostBuffer = @import("../utils.zig").HostBuffer;
 
 const log = std.log.scoped(.@"zg/tune_measurer");

@@ -89,7 +89,7 @@ pub const Execution = struct {
     fn upload(
         interface: *Executor,
         data: []const u8,
-        dtype: @import("../dtype.zig").DType,
+        dtype: @import("dtype").DType,
         shape: []const i64,
     ) Executor.Error!Executor.Buffer {
         const self = promote(interface);

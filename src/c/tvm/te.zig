@@ -4,7 +4,7 @@ const std = @import("std");
 const ffi = @import("ffi.zig");
 const container = @import("container.zig");
 const tir = @import("tir.zig");
-const DType = @import("../../dtype.zig").DType;
+const DType = @import("dtype").DType;
 
 /// Tensor produced by TVM's tensor-expression API.
 pub const Tensor = struct {

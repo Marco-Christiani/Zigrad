@@ -6,7 +6,7 @@
 //!  Zigrad tuning resolver compares the selected provider implementation with
 //!  the unreplaced callable.
 const std = @import("std");
-const device = @import("../device.zig");
+const device = @import("device");
 const tir = @import("../c/tvm/tir.zig");
 const runtime = @import("../c/tvm/runtime.zig");
 const ms = @import("../c/tvm/meta_schedule.zig");
@@ -14,7 +14,7 @@ const compile = @import("../c/tvm/compile.zig");
 const ffi = @import("../c/tvm/ffi.zig");
 const container = @import("../c/tvm/container.zig");
 const dlpack = @import("../c/dlpack.zig");
-const DType = @import("../dtype.zig").DType;
+const DType = @import("dtype").DType;
 const Cache = @import("../cache.zig").Cache;
 const build_options = @import("build_options");
 const config = @import("config.zig");

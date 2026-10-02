@@ -8,15 +8,15 @@
 //!
 //! Provider compilation and tuning run after extraction and before substitution.
 const std = @import("std");
-const compilation = @import("../../compilation.zig");
-const device = @import("../../device.zig");
-const output_mod = @import("../../output.zig");
+const compilation = @import("compilation");
+const device = @import("device");
+const output_mod = @import("output");
 const effects = @import("../analysis/effects.zig");
 const fingerprint = @import("../analysis/fingerprint.zig");
 const pattern = @import("../analysis/pattern.zig");
 const outline = @import("outline.zig");
 const pr = @import("../pr.zig");
-const kernel = @import("../../kernel.zig");
+const kernel = @import("kernel");
 
 const log = std.log.scoped(.@"zg/kernelize");
 

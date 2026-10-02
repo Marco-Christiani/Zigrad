@@ -591,7 +591,7 @@ test emit {
 }
 
 test "json with regions" {
-    const kernel = @import("../kernel.zig");
+    const kernel = @import("kernel");
     var program = pr.Program.init(std.testing.allocator);
     defer program.deinit();
 

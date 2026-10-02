@@ -4,7 +4,7 @@ const tree = @import("utils/tree.zig");
 const symbols = @import("utils/symbols.zig");
 const mmap = @import("utils/mmap.zig");
 
-pub const rtti = @import("utils/rtti.zig");
+pub const rtti = @import("rtti");
 pub const safetensors = @import("utils/safetensors.zig");
 pub const meta = @import("utils/meta.zig");
 pub const HostBuffer = host_buffer.HostBuffer;

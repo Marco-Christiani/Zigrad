@@ -2,8 +2,8 @@
 
 const std = @import("std");
 
-const device_mod = @import("../device.zig");
-const DType = @import("../dtype.zig").DType;
+const device_mod = @import("device");
+const DType = @import("dtype").DType;
 const dlpack = @import("../c/dlpack.zig");
 const ffi = @import("../c/tvm/ffi.zig");
 const tvm_compile = @import("../c/tvm/compile.zig");

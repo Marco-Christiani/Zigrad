@@ -1,7 +1,7 @@
 //! PR program representation and operations.
 
 const core = @import("pr/pr.zig");
-const compilation = @import("compilation.zig");
+const compilation = @import("compilation");
 
 pub const DType = core.DType;
 pub const Shape = core.Shape;
@@ -85,4 +85,5 @@ pub const transform = struct {
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = transform.kernelize;
 }

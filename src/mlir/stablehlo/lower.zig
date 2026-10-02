@@ -7,11 +7,11 @@
 //!  integration code and focused tests.
 const std = @import("std");
 
-const compilation = @import("../../compilation.zig");
-const pr = @import("../../pr/pr.zig");
-const fingerprint = @import("../../pr/analysis/fingerprint.zig");
-const kernelize = @import("../../pr/transform/kernelize.zig");
-const outline = @import("../../pr/transform/outline.zig");
+const compilation = @import("compilation");
+const pr = @import("pr");
+const fingerprint = @import("pr").analysis.fingerprint;
+const kernelize = @import("pr").transform.kernelize;
+const outline = @import("pr").transform.outline;
 const mlir = @import("../../c/mlir/mlir.zig");
 const stablehlo = @import("../../c/mlir/dialects/stablehlo.zig");
 const MlirSession = @import("../session.zig").Session;
@@ -579,14 +579,14 @@ pub fn lower(
 
 // Tests.
 
-const kernel_test = @import("../../kernel.zig");
+const kernel_test = @import("kernel");
 
 fn outline_kernel_requests_for_test(program: *pr.Program) !kernel_test.ExtractedCandidates {
     const Provider = struct {
         fn compile(
             _: *anyopaque,
             _: pr.Function,
-            _: @import("../../device.zig").Device,
+            _: @import("device").Device,
             _: std.mem.Allocator,
         ) kernel_test.CompileError!kernel_test.Artifact {
             return error.Unsupported;
@@ -807,7 +807,7 @@ test "lowering supports multi-output custom_call" {
     var candidates = try outline_kernel_requests_for_test(&program);
     defer candidates.deinit();
 
-    const selected_device = @import("../../device.zig").Device{ .platform = .cpu };
+    const selected_device = @import("device").Device{ .platform = .cpu };
     const candidate = candidates.entries.items[0];
     const outlined = program.get_function_by_id(candidate.callable_function).?;
     const function_fingerprint = try fingerprint.function(testing.allocator, outlined);
@@ -862,7 +862,7 @@ test "lowering supports vjp matmul demo" {
         break :blk try program.add_function(func);
     };
 
-    const vjp_id = try @import("../../pr/ad.zig").vjp(std.testing.allocator, &program, fwd_id, "vjp", .{});
+    const vjp_id = try @import("pr").ad.vjp(std.testing.allocator, &program, fwd_id, "vjp", .{});
     const bc = try lower_program_to_mlir(std.testing.allocator, &program, vjp_id, .mlir_bytecode);
     defer std.testing.allocator.free(bc);
     try std.testing.expect(bc.len > 0);
@@ -928,7 +928,7 @@ test "lower convolution" {
     try testing.expect(std.mem.indexOf(u8, text, "stablehlo.convolution") != null);
     try testing.expect(std.mem.indexOf(u8, text, "dim_numbers = [b, 0, 1, f]x[0, 1, i, o]->[b, 0, 1, f]") != null);
 
-    const vjp_id = try @import("../../pr/ad.zig").vjp(testing.allocator, &program, entry_id, "vjp", .{});
+    const vjp_id = try @import("pr").ad.vjp(testing.allocator, &program, entry_id, "vjp", .{});
     const vjp = try lower_program_to_mlir(testing.allocator, &program, vjp_id, .mlir_bytecode);
     defer testing.allocator.free(vjp);
     if (vjp.len == 0) return error.EmptyConvolutionVjp;

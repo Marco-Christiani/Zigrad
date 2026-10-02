@@ -7,12 +7,12 @@
 //!  separate `DispatchRegistry`.
 const std = @import("std");
 const artifact_mod = @import("kernel/artifact.zig");
-const device = @import("device.zig");
-const Range = @import("pr/analysis/pattern.zig").Range;
-const fingerprint = @import("pr/analysis/fingerprint.zig");
-const pr = @import("pr/pr.zig");
+const device = @import("device");
+const Range = @import("pr").analysis.pattern.Range;
+const fingerprint = @import("pr").analysis.fingerprint;
+const pr = @import("pr");
 const store_mod = @import("kernel/store.zig");
-const TypedPtr = @import("utils/rtti.zig").TypedPtr;
+const TypedPtr = @import("rtti").TypedPtr;
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.@"zg/kernel");
 
@@ -436,7 +436,7 @@ pub fn write_aval_signature(
     }
 }
 
-pub const DType = @import("dtype.zig").DType;
+pub const DType = @import("dtype").DType;
 
 /// Descriptor for a single buffer passed through an FFI call.
 ///
