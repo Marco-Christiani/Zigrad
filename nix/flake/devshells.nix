@@ -150,6 +150,8 @@
         packages =
           baseDevShellPkgs
           ++ [
+            pkgs.perf
+            pkgs.gdb
             cudaPackages.nsight_systems
             cudaPackages.nsight_compute
           ];
