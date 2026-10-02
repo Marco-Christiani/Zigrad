@@ -6,6 +6,7 @@ const pr = @import("../pr.zig");
 ///
 /// Unknown callees and recursive call cycles are treated as effectful. PR primitives
 ///  other than `custom_call` and `call` are pure.
+/// TODO: under-developed.
 pub fn function_may_have_side_effects(program: *const pr.Program, func: pr.Function) bool {
     return function_may_have_side_effects_impl(program, func, 0);
 }
