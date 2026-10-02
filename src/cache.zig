@@ -1,13 +1,5 @@
 //! Convenience utility for managing cache paths.
 //!
-//! ```zig
-//! const cache = try Cache.init(.{});
-//! const tvm = try cache.subdir("tvm", .{});
-//! const work = try tvm.subdir(key, .{});
-//! var idx = try tvm.join("index.json");
-//! _ = idx.path();  // borrowed slice so bind idx first, never use on a temporary
-//! ```
-//!
 //! Root resolution: explicit root > `ZG_CACHE_DIR` env var > `/tmp/zigrad-cache`.
 const std = @import("std");
 
@@ -31,7 +23,14 @@ pub const Cache = struct {
     };
 
     /// Initialize a cache rooted at the given path, `ZG_CACHE_DIR`, or `/tmp/zigrad-cache`.
-    pub fn init(io: std.Io, environ_map: *const std.process.Environ.Map, opts: InitOptions) !Cache {
+    pub fn init(
+        /// I/O context used to create the root directory.
+        io: std.Io,
+        /// Environment used when `opts.root` is null.
+        environ_map: *const std.process.Environ.Map,
+        /// Root selection and directory creation policy.
+        opts: InitOptions,
+    ) !Cache {
         const root: []const u8 = opts.root orelse
             environ_map.get("ZG_CACHE_DIR") orelse
             "/tmp/zigrad-cache";
@@ -62,7 +61,7 @@ pub const Cache = struct {
     }
 
     /// Append a path segment, optionally creating the resulting directory.
-    pub fn subdir(self: Cache, io: std.Io, name: []const u8, opts: Options) !Cache {
+    pub fn subdir(self: *const Cache, io: std.Io, name: []const u8, opts: Options) !Cache {
         const result = try self.join(name);
         if (opts.create) {
             std.Io.Dir.cwd().createDirPath(io, result.path()) catch |err| {
@@ -74,8 +73,8 @@ pub const Cache = struct {
     }
 
     /// Append a path segment, nothing is created on the fs.
-    pub fn join(self: Cache, name: []const u8) error{NameTooLong}!Cache {
-        var result = self;
+    pub fn join(self: *const Cache, name: []const u8) error{NameTooLong}!Cache {
+        var result = self.*;
         const new_len = self.len + 1 + name.len;
         // Reserve one byte for a potential sentinel.
         if (new_len >= result.buf.len) return error.NameTooLong;
@@ -100,16 +99,17 @@ test Cache {
     try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm", tvm.path());
 
     // join composes without creating dirs
-    const idx = try tvm.join("index.json");
-    try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm/index.json", idx.path());
+    const artifact = try tvm.join("kernel.so");
+    try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm/kernel.so", artifact.path());
 
     // chain
-    const deep = try (try cache.subdir(io, "tvm", .{})).join("abc123");
+    const cache_tvm = try cache.subdir(io, "tvm", .{});
+    const deep = try cache_tvm.join("abc123");
     try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm/abc123", deep.path());
 
     // dirZ
-    var z = try tvm.join("state.json");
+    var z = try tvm.join("workload.json");
     const sentinel = z.pathZ();
-    try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm/state.json", sentinel);
+    try std.testing.expectEqualStrings("/tmp/zigrad-cache-test/tvm/workload.json", sentinel);
     try std.testing.expectEqual(@as(u8, 0), sentinel[sentinel.len]);
 }
