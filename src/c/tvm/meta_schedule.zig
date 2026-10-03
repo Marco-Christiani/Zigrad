@@ -32,7 +32,7 @@ pub const Workload = struct {
 pub const TuningRecord = struct {
     object: Object,
 
-    fn take(value: *ffi.OwnedValue) !TuningRecord {
+    pub fn take(value: *ffi.OwnedValue) !TuningRecord {
         try value.borrow().require_instance("meta_schedule.TuningRecord");
         return .{ .object = try .take(value) };
     }
@@ -40,6 +40,31 @@ pub const TuningRecord = struct {
     fn retain(value: Value) !TuningRecord {
         try value.require_instance("meta_schedule.TuningRecord");
         return .{ .object = try Object.retain(value) };
+    }
+
+    /// Construct measured schedule evidence for a committed workload.
+    pub fn from_schedule(allocator: std.mem.Allocator, schedule: *const Schedule, workload: *const Workload, target: tir.Target, samples: []const f64) !TuningRecord {
+        var trace = try ffi.call_global(allocator, "tir.schedule.ScheduleGetTrace", &.{schedule.object.as_value()});
+        defer trace.deinit();
+        const values = try allocator.alloc(Value, samples.len);
+        defer allocator.free(values);
+        for (samples, values) |sample, *value| value.* = .float(sample);
+        var times = try container.Array.from_values(allocator, values);
+        defer times.deinit();
+        return ffi.call_global_take(TuningRecord, allocator, "meta_schedule.TuningRecord", &.{
+            trace.borrow(), workload.as_value(), times.as_value(), target.as_value(), .none(),
+        });
+    }
+
+    /// Replay this record's trace and retain its scheduled module.
+    pub fn replay_module(self: *const TuningRecord, allocator: std.mem.Allocator) !tir.IRModule {
+        var candidate = try ffi.call_global(allocator, "meta_schedule.TuningRecordAsMeasureCandidate", &.{self.object.as_value()});
+        defer candidate.deinit();
+        var schedule = try ffi.get_field(candidate.borrow(), "sch");
+        defer schedule.deinit();
+        var module = try ffi.call_global(allocator, "tir.schedule.ScheduleGetMod", &.{schedule.borrow()});
+        defer module.deinit();
+        return tir.IRModule.retain(module.borrow());
     }
 
     /// Copy the measured runtimes. The caller frees the returned slice.
@@ -160,6 +185,11 @@ pub const Database = struct {
         );
     }
 
+    /// Append a measured trace to this database.
+    pub fn commit_record(self: *const Database, allocator: std.mem.Allocator, record: *const TuningRecord) !void {
+        try ffi.call_global_void(allocator, "meta_schedule.DatabaseCommitTuningRecord", &.{ self.object.as_value(), record.object.as_value() });
+    }
+
     /// Return the workload corresponding to `module`, adding it when absent.
     pub fn commit_workload(
         self: *const Database,
@@ -192,32 +222,6 @@ pub const Database = struct {
         );
         defer result.deinit();
         return .{ .values = try container.Array.retain(result.borrow()) };
-    }
-
-    /// Apply the highest-ranked trace to `module`.
-    pub fn query_module(
-        self: *const Database,
-        allocator: std.mem.Allocator,
-        module: tir.IRModule,
-        target: tir.Target,
-        workload_name: [:0]const u8,
-    ) !?tir.IRModule {
-        var result = try ffi.call_global(
-            allocator,
-            "meta_schedule.DatabaseQueryIRModule",
-            &.{
-                self.object.as_value(),
-                module.as_value(),
-                target.as_value(),
-                Value.str(workload_name),
-            },
-        );
-        errdefer result.deinit();
-        if (result.borrow().is_none()) {
-            result.deinit();
-            return null;
-        }
-        return try tir.IRModule.take(&result);
     }
 
     fn as_value(self: *const Database) Value {
@@ -854,6 +858,30 @@ pub const Schedules = struct {
 /// One generated TIR schedule.
 pub const Schedule = struct {
     object: Object,
+
+    /// Trace-recording schedule configuration.
+    pub const Options = struct {
+        /// Random seed. -1 lets TVM choose a seed.
+        seed: i64 = -1,
+        /// TVM structural-debug bit mask.
+        debug_mask: i32 = 0,
+        /// Check structural preconditions of schedule operations.
+        enable_check: bool = true,
+    };
+
+    /// Create a trace-recording schedule with detailed diagnostics.
+    pub fn create(allocator: std.mem.Allocator, module: tir.IRModule, options: Options) !Schedule {
+        var value = try ffi.call_global(allocator, "tir.schedule.TracedSchedule", &.{
+            module.as_value(), .int(options.seed), .int(options.debug_mask), .int(0), .boolean(options.enable_check),
+        });
+        defer value.deinit();
+        return .{ .object = try Object.retain(value.borrow()) };
+    }
+
+    /// Resolve a block by name, recording the query in the schedule trace.
+    pub fn get_block(self: *const Schedule, allocator: std.mem.Allocator, name: [:0]const u8, function: [:0]const u8) !ffi.OwnedValue {
+        return ffi.call_global(allocator, "tir.schedule.ScheduleGetBlock", &.{ self.object.as_value(), .str(name), .str(function) });
+    }
 
     /// Render the schedule trace as Python source lines.
     pub fn python_trace(

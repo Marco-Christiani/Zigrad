@@ -384,7 +384,6 @@
     ];
     zigFeatureFlags = lib.concatStringsSep " " zigFeatureArgs;
     tvmCompilerFingerprint = builtins.hashString "sha256" (builtins.toJSON {
-      zigrad = "${zigradSrc}";
       tvmCpu =
         if has "tvm-cpu"
         then "${parts.tvmCpu}"
@@ -415,6 +414,7 @@
       }
       // lib.optionalAttrs (has "tvm-cpu" || has "tvm-cuda" || has "tvm-python-cuda") {
         ZG_TVM_COMPILER_FINGERPRINT = tvmCompilerFingerprint;
+        ZG_TVM_PIPELINE_CONTRACT_PATH = "${parts.tvmCpu.pipelineContract}/share/tvm/pipeline-contract.json";
         ZG_ELF_LINKER_PATH = "${parts.llvm}/bin/ld.lld";
       }
       // lib.optionalAttrs (has "tvm-cuda" || has "tvm-python-cuda") {

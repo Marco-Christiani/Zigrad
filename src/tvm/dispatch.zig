@@ -5,6 +5,7 @@ const std = @import("std");
 const kernel = @import("kernel");
 const dlpack = @import("../c/dlpack.zig");
 const tvm_runtime = @import("../c/tvm/runtime.zig");
+const ffi = @import("../c/tvm/ffi.zig");
 const integration_runtime = @import("runtime.zig");
 const Cache = @import("../cache.zig").Cache;
 const TypedPtr = @import("rtti").TypedPtr;
@@ -154,7 +155,7 @@ fn tensor_from_buffer_desc(buf: kernel.BufferDesc, device_type: dlpack.DeviceTyp
         .data = buf.data,
         .device = .{ .device_type = device_type, .device_id = device_id },
         .ndim = @intCast(buf.rank),
-        .dtype = kernel_dtype_to_dlpack(buf.dtype),
+        .dtype = ffi.dlpack_dtype(buf.dtype),
         .shape = @constCast(buf.dims.ptr),
         .strides = null,
         .byte_offset = 0,
@@ -164,20 +165,32 @@ fn tensor_from_buffer_desc(buf: kernel.BufferDesc, device_type: dlpack.DeviceTyp
     return try tvm_runtime.Tensor.from_dlpack(managed);
 }
 
-fn kernel_dtype_to_dlpack(dtype: kernel.DType) dlpack.DataType {
-    return switch (dtype) {
-        .f16 => .{ .code = .float, .bits = 16, .lanes = 1 },
-        .bf16 => .{ .code = .bfloat, .bits = 16, .lanes = 1 },
-        .f32 => .{ .code = .float, .bits = 32, .lanes = 1 },
-        .f64 => .{ .code = .float, .bits = 64, .lanes = 1 },
-        .i8 => .{ .code = .int, .bits = 8, .lanes = 1 },
-        .u8 => .{ .code = .uint, .bits = 8, .lanes = 1 },
-        .i32 => .{ .code = .int, .bits = 32, .lanes = 1 },
-        .i64 => .{ .code = .int, .bits = 64, .lanes = 1 },
-        .u32 => .{ .code = .uint, .bits = 32, .lanes = 1 },
-        .u64 => .{ .code = .uint, .bits = 64, .lanes = 1 },
-        .bool => .{ .code = .uint, .bits = 8, .lanes = 1 },
-    };
+test "tensor_from_buffer_desc preserves boolean interchange dtype and bytes" {
+    try integration_runtime.configure(.{ .surface = .compiler });
+    try integration_runtime.ensure_loaded(.runtime);
+    var values = [_]bool{ true, false, true, false };
+    const dims = [_]i64{values.len};
+    var tensor = try tensor_from_buffer_desc(.{
+        .data = @ptrCast(&values),
+        .dtype = .bool,
+        .dims = &dims,
+        .rank = dims.len,
+    }, .cpu, 0);
+    defer tensor.deinit();
+
+    const imported = try ffi.tensor_dlpack(tensor.as_value());
+    try std.testing.expectEqual(dlpack.DataTypeCode.bool_, imported.dtype.code);
+    try std.testing.expectEqual(@as(u8, 8), imported.dtype.bits);
+    try std.testing.expectEqual(@as(u16, 1), imported.dtype.lanes);
+    try std.testing.expectEqual(@as(?*anyopaque, @ptrCast(&values)), imported.data);
+    try std.testing.expectEqual(@as(i32, 1), imported.ndim);
+    try std.testing.expectEqual(@as(i64, values.len), imported.shape[0]);
+    try std.testing.expectEqual(@as(usize, values.len), tensor.byte_count);
+    const bytes: [*]const u8 = @ptrCast(imported.data.?);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0, 1, 0 }, bytes[0..values.len]);
+    var copied: [values.len]u8 = undefined;
+    try tensor.copy_to_host(std.testing.allocator, &copied);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 0, 1, 0 }, &copied);
 }
 
 fn configure_cuda_stream(stream_ptr: *anyopaque, device_id: i32) !void {

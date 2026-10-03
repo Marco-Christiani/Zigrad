@@ -1,6 +1,7 @@
 //! Storage and loading for tuned TVM modules.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const tvm_runtime = @import("../c/tvm/runtime.zig");
 const RuntimeModule = tvm_runtime.RuntimeModule;
 const TargetKind = @import("config.zig").TargetKind;
@@ -33,7 +34,7 @@ pub const LoadedArtifact = struct {
     }
 };
 
-const cache_key_format_version: u32 = 1;
+const cache_key_format_version: u32 = 2;
 
 /// Lowercase hexadecimal BLAKE3 cache key.
 pub const CacheKey = struct {
@@ -48,7 +49,7 @@ pub const CacheKey = struct {
 /// Compute the cache key for a matmul signature and target.
 pub fn matmul_cache_key(
     /// Cache fingerprint for compiler inputs that affect generated artifacts.
-    compiler_fingerprint: []const u8,
+    identity: @import("config.zig").BuildIdentity,
     target: []const u8,
     dtype: DType,
     m: i64,
@@ -58,7 +59,7 @@ pub fn matmul_cache_key(
     var hashing = std.crypto.hash.Blake3.init(.{});
     hashing.update("zigrad.tvm.matmul");
     hash_int(&hashing, u32, cache_key_format_version);
-    hash_bytes(&hashing, compiler_fingerprint);
+    hash_bytes(&hashing, &identity.digest);
     hash_bytes(&hashing, target);
     hash_bytes(&hashing, dtype.name());
     hash_int(&hashing, i64, m);
@@ -82,54 +83,104 @@ fn hash_int(hashing: *std.crypto.hash.Blake3, comptime Int: type, value: Int) vo
 }
 
 test matmul_cache_key {
-    const sm_80 = matmul_cache_key("compiler-a", "cuda -arch=sm_80", .f32, 128, 128, 128);
-    const sm_89 = matmul_cache_key("compiler-a", "cuda -arch=sm_89", .f32, 128, 128, 128);
-    const float16 = matmul_cache_key("compiler-a", "cuda -arch=sm_89", .f16, 128, 128, 128);
-    const compiler_b = matmul_cache_key("compiler-b", "cuda -arch=sm_89", .f32, 128, 128, 128);
+    const sm_80 = matmul_cache_key(@import("config.zig").BuildIdentity.from_external("compiler-a"), "cuda -arch=sm_80", .f32, 128, 128, 128);
+    const sm_89 = matmul_cache_key(@import("config.zig").BuildIdentity.from_external("compiler-a"), "cuda -arch=sm_89", .f32, 128, 128, 128);
+    const float16 = matmul_cache_key(@import("config.zig").BuildIdentity.from_external("compiler-a"), "cuda -arch=sm_89", .f16, 128, 128, 128);
+    const compiler_b = matmul_cache_key(@import("config.zig").BuildIdentity.from_external("compiler-b"), "cuda -arch=sm_89", .f32, 128, 128, 128);
     try std.testing.expect(!std.mem.eql(u8, sm_80.slice(), sm_89.slice()));
     try std.testing.expect(!std.mem.eql(u8, float16.slice(), sm_89.slice()));
     try std.testing.expect(!std.mem.eql(u8, compiler_b.slice(), sm_89.slice()));
 }
 
-const artifact_name = "kernel.so";
-const pending_artifact_name = "kernel.pending.so";
+pub const artifact_name = "kernel.so";
 
-/// Export and atomically publish a compiled module in `work_cache`.
-pub fn publish(
-    /// Compiled module to export.
-    module: RuntimeModule,
-    /// I/O context used to export and publish the module.
-    io: std.Io,
-    /// Allocator used by TVM and the linker.
-    allocator: std.mem.Allocator,
-    /// Cache directory dedicated to one workload and target.
-    work_cache: *const Cache,
-    /// Selects host-only or CUDA host-device export.
-    target: TargetKind,
-    /// Linker used to produce the ELF shared library.
-    linker: Linker,
-) !void {
-    var pending = try work_cache.join(pending_artifact_name);
-    const pending_path = pending.pathZ();
-    const published = try work_cache.join(artifact_name);
-    const cwd = std.Io.Dir.cwd();
-    defer cwd.deleteFile(io, pending.path()) catch |err| switch (err) {
-        error.FileNotFound => {},
-        else => log.warn(
-            "failed to remove pending artifact: {s}",
-            .{@errorName(err)},
-        ),
+/// Immutable publication generation, created under the owning workload lock.
+///  Readers retain the selected generation. Successful generations remain until cache removal.
+pub const Generation = struct {
+    cache: Cache,
+    name: [32]u8,
+
+    pub fn create(io: std.Io, work: *const Cache) !Generation {
+        var random: [16]u8 = undefined;
+        io.random(&random);
+        const name = std.fmt.bytesToHex(random, .lower);
+        const generations = try work.subdir(io, "generations", .{});
+        const cache = try generations.join(&name);
+        try std.Io.Dir.cwd().createDir(io, cache.path(), .default_dir);
+        return .{ .cache = cache, .name = name };
+    }
+
+    /// Export the measured file without changing the current generation.
+    pub fn stage(self: *const Generation, module: RuntimeModule, io: std.Io, allocator: std.mem.Allocator, target: TargetKind, linker: Linker) !void {
+        var path = try self.cache.join(artifact_name);
+        try export_mod.export_shared(module, io, allocator, path.pathZ(), target, linker);
+    }
+
+    /// Write complete evidence before atomically replacing the current pointer.
+    pub fn publish(self: *const Generation, io: std.Io, allocator: std.mem.Allocator, work: *const Cache, evidence: anytype) !void {
+        const data = try std.json.Stringify.valueAlloc(allocator, evidence, .{});
+        defer allocator.free(data);
+        const record = try self.cache.join("evidence.json");
+        const cwd = std.Io.Dir.cwd();
+        try cwd.writeFile(io, .{ .sub_path = record.path(), .data = data });
+        const pending = try work.join("current.pending");
+        const current = try work.join("current");
+        try cwd.writeFile(io, .{ .sub_path = pending.path(), .data = &self.name });
+        try cwd.rename(pending.path(), cwd, current.path(), io);
+    }
+
+    pub fn digest(self: *const Generation, io: std.Io, allocator: std.mem.Allocator) ![64]u8 {
+        const path = try self.cache.join(artifact_name);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path.path(), allocator, .limited(100 * 1024 * 1024));
+        defer allocator.free(bytes);
+        var hash: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(bytes, &hash, .{});
+        return std.fmt.bytesToHex(hash, .lower);
+    }
+};
+
+fn current_generation(io: std.Io, allocator: std.mem.Allocator, work: *const Cache) !?Cache {
+    const pointer = try work.join("current");
+    const name = std.Io.Dir.cwd().readFileAlloc(io, pointer.path(), allocator, .limited(33)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
     };
+    defer allocator.free(name);
+    if (name.len != 32) {
+        if (!builtin.is_test) log.err("current generation pointer in {s} has invalid length {d}", .{ work.path(), name.len });
+        return error.InvalidGeneration;
+    }
+    for (name) |ch| if (!std.ascii.isHex(ch)) {
+        if (!builtin.is_test) log.err("current generation pointer in {s} contains a non-hexadecimal byte", .{work.path()});
+        return error.InvalidGeneration;
+    };
+    const generations = try work.join("generations");
+    return try generations.join(name);
+}
 
-    try export_mod.export_shared(
-        module,
-        io,
-        allocator,
-        pending_path,
-        target,
-        linker,
-    );
-    try cwd.rename(pending.path(), cwd, published.path(), io);
+/// Stable database partition for every timing setting.
+pub fn protocol_key(protocol: tvm_runtime.TimeEvaluatorOptions) CacheKey {
+    var hashing = std.crypto.hash.Blake3.init(.{});
+    hashing.update("zigrad.tvm.protocol.v1");
+    hash_int(&hashing, i32, protocol.number);
+    hash_int(&hashing, i32, protocol.repeats);
+    hash_int(&hashing, i32, protocol.min_repeat_ms);
+    hash_int(&hashing, i32, protocol.cache_flush_bytes);
+    var digest: [32]u8 = undefined;
+    hashing.final(&digest);
+    return .{ .buf = std.fmt.bytesToHex(digest, .lower) };
+}
+
+test "protocol_key distinguishes each timing setting" {
+    const base = protocol_key(.{});
+    inline for (std.meta.fields(tvm_runtime.TimeEvaluatorOptions)) |field| {
+        var protocol: tvm_runtime.TimeEvaluatorOptions = .{};
+        @field(protocol, field.name) += 1;
+        const changed = protocol_key(protocol);
+        try std.testing.expect(!std.mem.eql(u8, base.slice(), changed.slice()));
+    }
+    const same = protocol_key(.{});
+    try std.testing.expectEqualStrings(base.slice(), same.slice());
 }
 
 /// Load the published module from `work_cache`, or return `null` when absent.
@@ -141,7 +192,8 @@ pub fn load_cached(
     /// Cache directory dedicated to one workload and target.
     work_cache: *const Cache,
 ) !?LoadedArtifact {
-    var path = try work_cache.join(artifact_name);
+    const generation = try current_generation(io, allocator, work_cache) orelse return null;
+    var path = try generation.join(artifact_name);
     std.Io.Dir.cwd().access(io, path.path(), .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
@@ -162,7 +214,8 @@ pub fn read_cached_bytes(
     /// Cache directory dedicated to one workload and target.
     work_cache: *const Cache,
 ) !?[]u8 {
-    const path = try work_cache.join(artifact_name);
+    const generation = try current_generation(io, allocator, work_cache) orelse return null;
+    const path = try generation.join(artifact_name);
     std.Io.Dir.cwd().access(io, path.path(), .{}) catch |err| switch (err) {
         error.FileNotFound => return null,
         else => return err,
@@ -173,4 +226,36 @@ pub fn read_cached_bytes(
         allocator,
         .limited(100 * 1024 * 1024),
     );
+}
+
+test "Generation keeps readers coherent and failed staging preserves current" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const root = try temporary.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    var environ: std.process.Environ.Map = .init(allocator);
+    defer environ.deinit();
+    const work = try Cache.init(io, &environ, .{ .root = root });
+    const first = try Generation.create(io, &work);
+    const first_file = try first.cache.join(artifact_name);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = first_file.path(), .data = "first artifact" });
+    try first.publish(io, allocator, &work, .{ .artifact_digest = try first.digest(io, allocator), .protocol = tvm_runtime.TimeEvaluatorOptions{} });
+    const reader = (try current_generation(io, allocator, &work)).?;
+    const unpublished = try Generation.create(io, &work);
+    const failed_file = try unpublished.cache.join(artifact_name);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = failed_file.path(), .data = "unmeasured artifact" });
+    const unchanged = (try current_generation(io, allocator, &work)).?;
+    try std.testing.expectEqualStrings(reader.path(), unchanged.path());
+    try unpublished.publish(io, allocator, &work, .{ .artifact_digest = try unpublished.digest(io, allocator), .protocol = tvm_runtime.TimeEvaluatorOptions{} });
+    const changed = (try current_generation(io, allocator, &work)).?;
+    try std.testing.expect(!std.mem.eql(u8, changed.path(), reader.path()));
+    const old_file = try reader.join(artifact_name);
+    const old_bytes = try std.Io.Dir.cwd().readFileAlloc(io, old_file.path(), allocator, .limited(100));
+    defer allocator.free(old_bytes);
+    try std.testing.expectEqualStrings("first artifact", old_bytes);
+    const current_bytes = (try read_cached_bytes(io, allocator, &work)).?;
+    defer allocator.free(current_bytes);
+    try std.testing.expectEqualStrings("unmeasured artifact", current_bytes);
 }

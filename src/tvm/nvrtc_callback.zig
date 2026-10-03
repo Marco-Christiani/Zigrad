@@ -78,7 +78,8 @@ const CallbackState = struct {
 
 /// Register the NVRTC compilation callback with TVM.
 ///
-/// Registration must precede TVM CUDA compilation.
+/// Registration copies configuration and architecture until TVM calls its destructor.
+///  Registration must precede TVM CUDA compilation.
 pub fn register(
     config: cuda_nvrtc.Config,
     gpu_arch: []const u8,
@@ -165,4 +166,15 @@ fn compile_with_nvrtc(
     });
     if (ptx.len == 0) return error.NvrtcGetPtxFailed;
     return ptx[0 .. ptx.len - 1];
+}
+
+test "CallbackState owns configuration and architecture copies" {
+    var architecture = [_]u8{ 's', 'm', '_', '8', '0' };
+    const state = try CallbackState.create(.{ .library_path = "libnvrtc.so", .toolkit_root = "cuda", .glibc_include_dir = "include" }, &architecture);
+    defer state.destroy();
+    architecture[4] = '9';
+    const snapshot = state.snapshot();
+    try std.testing.expectEqualStrings("sm_80", snapshot.gpu_arch);
+    try std.testing.expectEqualStrings("include", snapshot.config.glibc_include_dir.?);
+    try std.testing.expect(snapshot.config.gcc_include_dir == null);
 }

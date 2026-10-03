@@ -181,6 +181,30 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    if (use_tvm) {
+        var inactive: std.ArrayList([]const u8) = .empty;
+        const translated = [_]struct { name: []const u8, enabled: bool }{
+            .{ .name = "c-pjrt", .enabled = use_pjrt },     .{ .name = "c-mlir", .enabled = use_mlir },
+            .{ .name = "c-mirage", .enabled = use_mirage }, .{ .name = "c-nvrtc", .enabled = use_nvrtc },
+        };
+        for (translated) |module| if (!module.enabled) {
+            inactive.append(b.allocator, module.name) catch @panic("OOM");
+        };
+        const identity = @import("tools/tvm_identity.zig").derive(b, zigrad_mod, b.fmt("target={s};optimize={s};nvrtc={};pjrt={};mlir={};mirage={};iree={};cuda={}", .{
+            target.result.zigTriple(b.allocator) catch @panic("OOM"), @tagName(optimize),
+            use_nvrtc,                                                use_pjrt,
+            use_mlir,                                                 use_mirage,
+            use_iree,                                                 use_cuda_runtime,
+        }), inactive.items) catch |err| std.debug.panic("TVM lowering identity failed: {s}", .{@errorName(err)});
+        build_options.addOption([]const u8, "tvm_lowering_identity", identity.digest);
+        const diagnostic = b.addWriteFiles();
+        const manifest = diagnostic.add("tvm-source-manifest.txt", identity.manifest);
+        const identity_step = b.step("tvm-identity", "Write the TVM source manifest and classified import edges");
+        identity_step.dependOn(&diagnostic.step);
+        const install_manifest = b.addInstallFile(manifest, "tvm-source-manifest.txt");
+        identity_step.dependOn(&install_manifest.step);
+    }
+
     const exe = b.addExecutable(.{
         .name = "zigrad",
         .root_module = b.createModule(.{

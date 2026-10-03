@@ -12,5 +12,6 @@ in
       (root + /assets)
       (root + /src)
       (root + /tools)
+      (root + /scripts/generate_tvm_pipeline_contract.py)
     ];
   }

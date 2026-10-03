@@ -8,9 +8,11 @@ const matmul = @import("tvm/matmul.zig");
 
 pub const runtime = @import("tvm/runtime.zig");
 pub const TargetKind = config.TargetKind;
+pub const BuildIdentity = config.BuildIdentity;
 pub const CompileConfig = config.CompileConfig;
 pub const TimeEvaluatorOptions = @import("c/tvm/runtime.zig").TimeEvaluatorOptions;
 
+pub const ElementType = matmul.ElementType;
 pub const MatmulShape = matmul.Shape;
 pub const TuneOptions = matmul.TuneOptions;
 pub const TuneResult = matmul.TuneResult;

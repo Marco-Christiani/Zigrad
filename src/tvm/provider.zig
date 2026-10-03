@@ -21,7 +21,7 @@ const log = std.log.scoped(.@"zg/tvm_provider");
 pub const TvmProvider = struct {
     /// I/O context used by cache and tuning operations.
     io: std.Io,
-    /// Target compiler and linker configuration.
+    /// Target compiler and linker configuration borrowed until provider destruction.
     compile_config: config.CompileConfig,
     /// Artifact and tuning cache.
     cache: Cache,
@@ -117,7 +117,7 @@ pub const TvmProvider = struct {
         device: device_mod.Device,
         allocator: std.mem.Allocator,
     ) kernel.CompileError!kernel.Artifact {
-        if (!self.compile_config.target.accepts(device)) {
+        if (!self.compile_config.target.kind().accepts(device)) {
             return error.Unsupported;
         }
         const mm_shape = validate_matmul_function(func) orelse return error.Unsupported;
@@ -155,8 +155,8 @@ pub const TvmProvider = struct {
             allocator,
             &self.cache,
             shape,
-            self.compile_config.compiler_fingerprint,
-            self.compile_config.target,
+            self.compile_config.build_identity(),
+            self.compile_config.target.kind(),
             device,
         ) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
@@ -248,12 +248,8 @@ fn validate_matmul_op(op: *const pr.Op) ?mm.Shape {
     if (c_tensor.shape.dims[0] != m or c_tensor.shape.dims[1] != n) return null;
 
     if (a.dtype != b.dtype or a.dtype != c_tensor.dtype) return null;
-    switch (a.dtype) {
-        .f16, .f32 => {},
-        else => return null,
-    }
-
-    return .{ .m = m, .n = n, .k = k, .dtype = a.dtype };
+    const element = mm.ElementType.from_dtype(a.dtype) orelse return null;
+    return .{ .m = m, .n = n, .k = k, .dtype = element };
 }
 
 fn make_kernel_artifact(artifact: mm.CachedArtifact) kernel.Artifact {
@@ -329,5 +325,21 @@ test "TVM compilation requires a complete matrix matmul function" {
         const output = try builder.mm(rhs, lhs);
         const func = try builder.finish(.{ .returns = &.{output} });
         try testing.expectEqual(null, validate_matmul_function(func));
+    }
+}
+
+test "TVM provider admission follows ElementType across shared dtypes" {
+    inline for (std.meta.tags(@import("dtype").DType)) |dtype| {
+        var program = pr.Program.init(std.testing.allocator);
+        defer program.deinit();
+        var builder = try pr.FunctionBuilder.init(&program, "admission");
+        defer builder.deinit();
+        const lhs = try builder.param_tensor(dtype, &.{ 2, 4 });
+        const rhs = try builder.param_tensor(dtype, &.{ 4, 3 });
+        const output = try builder.mm(lhs, rhs);
+        const func = try builder.finish(.{ .returns = &.{output} });
+        const admitted = validate_matmul_function(func);
+        try std.testing.expectEqual(mm.ElementType.from_dtype(dtype) != null, admitted != null);
+        if (admitted) |shape| try std.testing.expectEqual(dtype, shape.dtype.dtype());
     }
 }

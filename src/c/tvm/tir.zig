@@ -9,7 +9,9 @@ const c = @import("c.zig");
 const dlpack = @import("../dlpack.zig");
 const Value = ffi.Value;
 const TvmError = ffi.TvmError;
-const TargetKind = @import("../../tvm/config.zig").TargetKind;
+const config = @import("../../tvm/config.zig");
+const TargetKind = config.TargetKind;
+const Device = @import("device").Device;
 
 const log = std.log.scoped(.@"zg/tvm_tir");
 
@@ -25,6 +27,62 @@ pub const PrimFunc = struct {
 
     fn as_value(self: *const PrimFunc) Value {
         return self.object.as_value();
+    }
+
+    /// Copy the function with an explicit alignment for its external buffers.
+    ///  Body buffers retain their data variables. Internal allocations retain their alignment.
+    pub fn with_buffer_alignment(self: *const PrimFunc, allocator: std.mem.Allocator, alignment: u32) !PrimFunc {
+        std.debug.assert(std.math.isPowerOfTwo(alignment));
+        const field_names = [_][]const u8{ "params", "body", "ret_type", "buffer_map", "attrs", "span" };
+        var fields: [field_names.len]ffi.OwnedValue = undefined;
+        var initialized: usize = 0;
+        defer for (fields[0..initialized]) |*field| field.deinit();
+        for (field_names, &fields) |name, *field| {
+            field.* = try ffi.get_field(self.as_value(), name);
+            initialized += 1;
+        }
+        var params = container.Array{ .object = try ffi.Object.retain(fields[0].borrow()) };
+        defer params.deinit();
+        var buffers = try container.Map.retain(fields[3].borrow());
+        defer buffers.deinit();
+        var pairs: std.ArrayList(Value) = .empty;
+        defer pairs.deinit(allocator);
+        var owned: std.ArrayList(ffi.OwnedValue) = .empty;
+        defer {
+            for (owned.items) |*value| value.deinit();
+            owned.deinit(allocator);
+        }
+        for (0..try params.len(allocator)) |i| {
+            var param = try params.get(allocator, i);
+            defer param.deinit();
+            if (!try buffers.contains(allocator, param.borrow())) continue;
+            var buffer = try buffers.get(allocator, param.borrow());
+            defer buffer.deinit();
+            const names = [_][]const u8{ "data", "dtype", "shape", "strides", "elem_offset", "name", "offset_factor", "buffer_type", "axis_separators", "span" };
+            var parts: [names.len]ffi.OwnedValue = undefined;
+            var count: usize = 0;
+            defer for (parts[0..count]) |*part| part.deinit();
+            for (names, &parts) |name, *part| {
+                part.* = try ffi.get_field(buffer.borrow(), name);
+                count += 1;
+            }
+            const replacement = blk: {
+                var value = try ffi.call_global(allocator, "tir.Buffer", &.{
+                    parts[0].borrow(),                                                                        parts[1].borrow(), parts[2].borrow(),    parts[3].borrow(),
+                    parts[4].borrow(),                                                                        parts[5].borrow(), Value.int(alignment), parts[6].borrow(),
+                    Value.str(if (try parts[7].borrow().require_int() == 2) "auto_broadcast" else "default"), parts[8].borrow(), parts[9].borrow(),
+                });
+                errdefer value.deinit();
+                try owned.append(allocator, value);
+                break :blk value.borrow();
+            };
+            try pairs.appendSlice(allocator, &.{ param.borrow(), replacement });
+        }
+        var buffer_map = try container.Map.from_pairs(allocator, pairs.items);
+        defer buffer_map.deinit();
+        return try ffi.call_global_take(PrimFunc, allocator, "tir.PrimFunc", &.{
+            fields[0].borrow(), fields[1].borrow(), fields[2].borrow(), buffer_map.as_value(), fields[4].borrow(), fields[5].borrow(),
+        });
     }
 
     /// Release the TVM TIR function.
@@ -111,6 +169,13 @@ pub const IRModule = struct {
         return self.object.as_value();
     }
 
+    /// Copy this module's serialized TIR. The caller frees the returned bytes.
+    pub fn dupe_json(self: *const IRModule, allocator: std.mem.Allocator) ![]u8 {
+        var serialized = try ffi.call_global(allocator, "node.SaveJSON", &.{self.as_value()});
+        defer serialized.deinit();
+        return serialized.borrow().dupe_string(allocator);
+    }
+
     /// Release the TVM IR module.
     pub fn deinit(self: *IRModule) void {
         self.object.deinit();
@@ -158,33 +223,28 @@ pub const Target = struct {
         return try create_from_description(allocator, description);
     }
 
-    /// Detect a target and preserve its cache-key description.
-    pub fn resolve(
-        /// Allocator used until the returned target is deinitialized.
-        allocator: std.mem.Allocator,
-        /// Target family to detect.
-        kind: TargetKind,
-        /// Device index used for target detection.
-        device_ordinal: i32,
-    ) !ResolvedTarget {
-        var resolution = try describe(
-            allocator,
-            kind,
-            device_ordinal,
-        );
+    /// Resolve a compilation payload after validating target/device agreement.
+    pub fn resolve(allocator: std.mem.Allocator, inputs: config.TargetInputs, device: Device) !ResolvedTarget {
+        const kind = inputs.kind();
+        if (!kind.accepts(device)) {
+            log.err("TVM target {s} disagrees with the selected device", .{@tagName(kind)});
+            return error.TargetDeviceMismatch;
+        }
+        var resolution = try describe(allocator, kind, device.ordinal);
         errdefer resolution.deinit();
-        log.info(
-            "resolved {s} target for device {d}: {s}",
-            .{ @tagName(kind), device_ordinal, resolution.description },
-        );
+        const target = try create_from_description(allocator, resolution.description);
         return .{
             .allocator = allocator,
-            .description = resolution.description,
-            .gpu_arch = resolution.gpu_arch,
-            .target = try create_from_description(
-                allocator,
-                resolution.description,
-            ),
+            .device = device,
+            .payload = switch (inputs) {
+                .cpu => .{ .cpu = .{ .description = resolution.description, .target = target } },
+                .cuda => |cuda| .{ .cuda = .{
+                    .description = resolution.description,
+                    .target = target,
+                    .inputs = cuda,
+                    .gpu_arch = resolution.inputs.cuda.gpu_arch,
+                } },
+            },
         };
     }
 
@@ -208,7 +268,7 @@ pub const Target = struct {
                         .{cpu_count},
                         0,
                     ),
-                    .gpu_arch = null,
+                    .inputs = .cpu,
                 };
             },
             .cuda => blk: {
@@ -229,7 +289,7 @@ pub const Target = struct {
                         properties,
                         gpu_arch,
                     ),
-                    .gpu_arch = gpu_arch,
+                    .inputs = .{ .cuda = .{ .gpu_arch = gpu_arch } },
                 };
             },
         };
@@ -260,24 +320,46 @@ pub const Target = struct {
     }
 };
 
-/// TVM target paired with the description that produced it.
+const DetectedInputs = union(TargetKind) { cpu, cuda: struct { gpu_arch: []u8 } };
+
+/// Resolved target owns its description and architecture until deinit.
+///  CUDA configuration is borrowed for the same lifetime; callback registration copies it.
 pub const ResolvedTarget = struct {
-    /// Allocator used to release `description` and `gpu_arch`.
     allocator: std.mem.Allocator,
-    /// TVM target description used to construct `target`.
-    description: [:0]u8,
+    device: Device,
+    payload: union(TargetKind) {
+        cpu: struct { description: [:0]u8, target: Target },
+        cuda: struct { description: [:0]u8, target: Target, inputs: config.CudaInputs, gpu_arch: []u8 },
+    },
 
-    /// NVRTC architecture spelling for CUDA targets.
-    gpu_arch: ?[]u8,
+    pub fn target(self: *const ResolvedTarget) Target {
+        return switch (self.payload) {
+            inline else => |p| p.target,
+        };
+    }
 
-    /// Target constructed from `description`.
-    target: Target,
+    pub fn description(self: *const ResolvedTarget) [:0]const u8 {
+        return switch (self.payload) {
+            inline else => |p| p.description,
+        };
+    }
 
-    /// Release the target and its copied descriptions.
+    pub fn kind(self: *const ResolvedTarget) TargetKind {
+        return std.meta.activeTag(self.payload);
+    }
+
     pub fn deinit(self: *ResolvedTarget) void {
-        self.target.deinit();
-        self.allocator.free(self.description);
-        if (self.gpu_arch) |gpu_arch| self.allocator.free(gpu_arch);
+        switch (self.payload) {
+            .cpu => |*cpu| {
+                cpu.target.deinit();
+                self.allocator.free(cpu.description);
+            },
+            .cuda => |*cuda| {
+                cuda.target.deinit();
+                self.allocator.free(cuda.description);
+                self.allocator.free(cuda.gpu_arch);
+            },
+        }
         self.* = undefined;
     }
 };
@@ -309,13 +391,16 @@ pub const TargetDescription = struct {
     allocator: std.mem.Allocator,
     /// TVM target description.
     description: [:0]u8,
-    /// NVRTC architecture spelling for CUDA targets.
-    gpu_arch: ?[]u8,
+    /// CUDA owns its NVRTC architecture spelling.
+    inputs: DetectedInputs,
 
     /// Release the copied target description.
     pub fn deinit(self: *TargetDescription) void {
         self.allocator.free(self.description);
-        if (self.gpu_arch) |gpu_arch| self.allocator.free(gpu_arch);
+        switch (self.inputs) {
+            .cpu => {},
+            .cuda => |cuda| self.allocator.free(cuda.gpu_arch),
+        }
         self.* = undefined;
     }
 };
@@ -489,7 +574,7 @@ test cuda_architecture {
 }
 
 /// TIR transform passes as a tagged union. Compile-time checked names
-/// prevent string typos. Passes with arguments carry their args inline.
+///  prevent string typos. Passes with arguments carry their args inline.
 pub const TirPass = union(enum) {
     // No-arg passes
     lower_cross_thread_reduction,
@@ -551,7 +636,7 @@ pub const TirPass = union(enum) {
     /// Returns the TVM global function name for this pass.
     ///
     /// Most names follow `"tir.transform." ++ PascalCase(@tagName)`. Variants
-    /// where TVM's name diverges from that convention have explicit overrides.
+    ///  where TVM's name diverges from that convention have explicit overrides.
     pub fn name(self: TirPass) []const u8 {
         return switch (self) {
             // Overrides where TVM name diverges from PascalCase(@tagName)
@@ -627,7 +712,7 @@ pub const TirPass = union(enum) {
 /// Get the attribute Map from an IR function (PrimFunc, etc.).
 ///
 /// Calls `ir.BaseFunc_Attrs` then `ir.DictAttrsGetDict` and wraps the
-/// result as a Map. Returns null if the function has no attributes.
+///  result as a Map. Returns null if the function has no attributes.
 pub fn get_func_attrs(allocator: std.mem.Allocator, func: Value) TvmError!?container.Map {
     var dict_attrs = try ffi.call_global(allocator, "ir.BaseFunc_Attrs", &.{func});
     defer dict_attrs.deinit();

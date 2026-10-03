@@ -134,7 +134,7 @@ pub const Harness = struct {
             self.io,
             self.allocator,
             &self.cache,
-            tvm_shape(shape),
+            try self.tvm_shape(shape),
             .{
                 .compile = compile_config,
                 .device = .{
@@ -296,7 +296,7 @@ pub const Harness = struct {
         }
     }
 
-    /// Execute TVM matmul (loads pre-tuned module from cache index).
+    /// Execute the published TVM generation for this shape.
     fn run_tvm(
         self: *Harness,
         comptime T: type,
@@ -306,7 +306,8 @@ pub const Harness = struct {
         c: []T,
         device: DeviceKind,
     ) !void {
-        if (comptime T != f32) return error.UnsupportedDtype;
+        const element = comptime zg.tvm.ElementType.from_dtype(DType.from_zig_type(T).to_pr_dtype()) orelse
+            return error.UnsupportedDtype;
 
         const mem_cache = switch (device) {
             .cpu => &self.tvm_cpu_cache,
@@ -320,15 +321,15 @@ pub const Harness = struct {
                 .cpu => .cpu,
                 .gpu => .cuda,
             };
-            const compiler_fingerprint = try zg.tvm.CompileConfig.resolve_compiler_fingerprint(
+            const build_identity = try zg.tvm.CompileConfig.resolve_build_identity(
                 self.environ,
             );
             const module = try zg.tvm.CachedMatmul.load(
                 self.io,
                 self.allocator,
                 &self.cache,
-                tvm_shape(shape),
-                compiler_fingerprint,
+                try self.tvm_shape(shape),
+                build_identity,
                 target_kind,
                 .{
                     .platform = if (target_kind == .cuda) .cuda else .cpu,
@@ -342,14 +343,15 @@ pub const Harness = struct {
         };
 
         try tuned.execute(
-            @ptrCast(a),
-            @ptrCast(b),
-            @ptrCast(c),
+            element,
+            a,
+            b,
+            c,
         );
     }
 
-    fn tvm_shape(shape: Shape) zg.tvm.MatmulShape {
-        return .{ .m = shape.m, .n = shape.n, .k = shape.k };
+    fn tvm_shape(self: *const Harness, shape: Shape) !zg.tvm.MatmulShape {
+        return .{ .m = shape.m, .n = shape.n, .k = shape.k, .dtype = zg.tvm.ElementType.from_dtype(self.config.dtype.to_pr_dtype()) orelse return error.UnsupportedDtype };
     }
 
     /// Execute XLA/PJRT matmul (compiles on-the-fly, caches per shape).

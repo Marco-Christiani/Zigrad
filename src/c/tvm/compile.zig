@@ -89,8 +89,7 @@ const CudaCompilerState = struct {
 
 /// Apply the TIR lowering pipeline and compile for one target.
 ///
-/// Pass ordering follows `python/tvm/tir/pipeline.py::default_tir_pipeline`.
-/// Host and device partitioning follows `python/tvm/tir/build.py::build`.
+/// The default pass context governs lowering and host/device partitioning.
 pub fn lower_and_compile(
     /// Allocator used by TVM packed calls.
     allocator: std.mem.Allocator,
@@ -101,8 +100,18 @@ pub fn lower_and_compile(
     /// Selects host-only or CUDA host-device code generation.
     target_kind: TargetKind,
 ) !RuntimeModule {
+    var empty = try @import("container.zig").Array.from_values(allocator, &.{});
+    defer empty.deinit();
+    var context = try ffi.call_global(allocator, "transform.PassContext", &.{
+        .int(2), empty.as_value(), empty.as_value(), empty.as_value(), .none(),
+    });
+    defer context.deinit();
+    try ffi.call_global_void(allocator, "transform.EnterPassContext", &.{context.borrow()});
+    defer ffi.call_global_void(allocator, "transform.ExitPassContext", &.{context.borrow()}) catch |err| {
+        log.err("failed to restore TVM pass context: {s}", .{@errorName(err)});
+    };
     // MakePackedAPI requires target->GetHost() to return a host target.
-    //  Without it, the function remains unchanged and buffer_map is not cleared.
+    //  The pass uses the host to unpack function parameters.
     var host_target = switch (target_kind) {
         .cpu => target,
         .cuda => try Target.create(allocator, .cpu, 0),
@@ -156,7 +165,7 @@ const default_tir_pipeline = [_]TirPass{
     .remove_no_op,
     .rewrite_unsafe_select,
     .{ .common_subexpr_elim = .{ .enable_cse = true, .enable_equiv = false } },
-    .{ .fp8_compute_legalize = .{ .promote_dtype = "float16" } },
+    .{ .fp8_compute_legalize = .{ .promote_dtype = "float32" } },
     .verify_vtcm_limit,
     .lower_vtcm_alloc,
     .verify_memory,
@@ -198,8 +207,6 @@ fn compile_cpu_module(allocator: std.mem.Allocator, ir_mod: IRModule, target: Ta
 
 /// Compile and link the host and device parts of a CUDA runtime module.
 fn compile_cuda_module(allocator: std.mem.Allocator, ir_mod: IRModule, target: Target) !RuntimeModule {
-    // `python/tvm/tir/build.py::split_host_device_mods` performs the same
-    //  partition before target code generation.
     var device_mod = try filter_module(allocator, ir_mod, .device);
     defer device_mod.deinit();
 
@@ -346,4 +353,68 @@ fn function_is_host(allocator: std.mem.Allocator, func: Value) !bool {
     const kind = try kind_value.borrow().dupe_string(allocator);
     defer allocator.free(kind);
     return std.mem.eql(u8, kind, "llvm") or std.mem.eql(u8, kind, "c");
+}
+
+test "default_tir_pipeline matches pinned source contract" {
+    const allocator = std.testing.allocator;
+    const path = std.process.Environ.getAlloc(std.testing.environ, allocator, "ZG_TVM_PIPELINE_CONTRACT_PATH") catch {
+        log.err("TVM comparison requires ZG_TVM_PIPELINE_CONTRACT_PATH", .{});
+        return error.MissingPipelineContract;
+    };
+    defer allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, allocator, .limited(65536));
+    defer allocator.free(bytes);
+    const Contract = struct {
+        source_digest: []const u8,
+        defaults: struct {
+            @"tir.disable_vectorize": bool,
+            @"tir.disable_storage_rewrite": bool,
+            @"tir.use_async_copy": bool,
+            @"tir.instrument_bound_checkers": bool,
+            @"tir.ptx_ldg32": bool,
+            @"tir.disable_cse_tir": bool,
+            @"tir.enable_equiv_terms_in_cse_tir": bool,
+            @"tir.instrument_lwp": bool,
+            @"tir.detect_global_barrier": bool,
+        },
+        passes: []struct { name: []const u8, args: [][]const u8 },
+    };
+    const parsed = try std.json.parseFromSlice(Contract, allocator, bytes, .{});
+    defer parsed.deinit();
+    try validate_pipeline_contract(parsed.value);
+    const first = parsed.value.passes[0];
+    parsed.value.passes[0] = parsed.value.passes[1];
+    try std.testing.expectError(error.PipelineMismatch, validate_pipeline_contract(parsed.value));
+    parsed.value.passes[0] = first;
+    var changed_defaults = parsed.value;
+    changed_defaults.defaults.@"tir.disable_vectorize" = true;
+    try std.testing.expectError(error.PipelineMismatch, validate_pipeline_contract(changed_defaults));
+    for (parsed.value.passes) |*pass| if (std.mem.eql(u8, pass.name, "tir.transform.FP8ComputeLegalize")) {
+        const promotion = pass.args[0];
+        pass.args[0] = "float16";
+        try std.testing.expectError(error.PipelineMismatch, validate_pipeline_contract(parsed.value));
+        pass.args[0] = promotion;
+    };
+}
+
+fn validate_pipeline_contract(contract: anytype) !void {
+    if (default_tir_pipeline.len != contract.passes.len) return error.PipelineMismatch;
+    inline for (std.meta.fields(@TypeOf(contract.defaults))) |field| {
+        if (@field(contract.defaults, field.name)) return error.PipelineMismatch;
+    }
+    for (default_tir_pipeline, contract.passes) |pass, expected| {
+        if (!std.mem.eql(u8, pass.name(), expected.name)) return error.PipelineMismatch;
+        const args: []const []const u8 = switch (pass) {
+            .compact_buffer_alloc => |v| if (v.is_strict) &.{"true"} else &.{"false"},
+            .narrow_data_type => |v| if (v.target_bits == 32) &.{"32"} else return error.PipelineMismatch,
+            .vectorize_loop => |v| if (v.enable) &.{"true"} else &.{"false"},
+            .common_subexpr_elim => |v| if (v.enable_cse and !v.enable_equiv) &.{ "true", "false" } else return error.PipelineMismatch,
+            .fp8_compute_legalize => |v| &.{v.promote_dtype},
+            .thread_sync => |v| &.{v.scope},
+            .verify_vtcm_limit, .hoist_if_then_else => &.{"null"},
+            else => &.{},
+        };
+        if (args.len != expected.args.len) return error.PipelineMismatch;
+        for (args, expected.args) |actual, wanted| if (!std.mem.eql(u8, actual, wanted)) return error.PipelineMismatch;
+    }
 }

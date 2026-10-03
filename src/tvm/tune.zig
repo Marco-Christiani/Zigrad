@@ -3,8 +3,7 @@
 //! Runs TVM's MetaSchedule search for a given IRModule and target.
 //! Builder and runner callbacks receive provider state through TVM's
 //!  userdata pointer. Schedule timings rank implementations within TVM. The
-//!  Zigrad tuning resolver compares the selected provider implementation with
-//!  the unreplaced callable.
+//!  selected publication is measured after export.
 const std = @import("std");
 const device = @import("device");
 const tir = @import("../c/tvm/tir.zig");
@@ -14,10 +13,9 @@ const compile = @import("../c/tvm/compile.zig");
 const ffi = @import("../c/tvm/ffi.zig");
 const container = @import("../c/tvm/container.zig");
 const dlpack = @import("../c/dlpack.zig");
-const DType = @import("dtype").DType;
+const ElementType = @import("matmul.zig").ElementType;
 const Cache = @import("../cache.zig").Cache;
 const build_options = @import("build_options");
-const config = @import("config.zig");
 const cuda_intrinsics = @import("cuda_intrinsics.zig");
 const integration_runtime = @import("runtime.zig");
 const export_mod = @import("export.zig");
@@ -35,14 +33,10 @@ const nvrtc_callback = if (build_options.has_nvrtc) @import("nvrtc_callback.zig"
 const log = std.log.scoped(.@"zg/tvm_tune");
 
 pub const TuneOpts = struct {
-    /// Target-specific compiler inputs resolved by application composition.
-    compile: config.CompileConfig,
-
-    /// Device used for candidate compilation and measurement.
-    device: device.Device,
-
-    /// NVRTC architecture resolved from the TVM CUDA target.
-    gpu_arch: ?[]const u8,
+    /// Complete target payload borrowed until tuning returns.
+    resolved: *const tir.ResolvedTarget,
+    /// Linker borrowed for this invocation.
+    linker: Linker,
 
     /// Directory containing this workload's tuning state and candidates.
     work_cache: *const Cache,
@@ -55,22 +49,6 @@ pub const TuneOpts = struct {
 
     /// TVM timing policy applied to each compiled schedule.
     measurement: runtime.TimeEvaluatorOptions = .{},
-};
-
-/// Highest-ranked schedule and its measurements.
-pub const Result = struct {
-    /// Scheduled module selected by TVM's database ranking.
-    module: IRModule,
-    /// Mean of the selected record's measurements.
-    mean_time_seconds: f64,
-    /// Number of measurements contributing to the mean.
-    sample_count: usize,
-
-    /// Release the selected scheduled module.
-    pub fn deinit(self: *Result) void {
-        self.module.deinit();
-        self.* = undefined;
-    }
 };
 
 /// State passed to MetaSchedule builder and runner callbacks.
@@ -86,7 +64,7 @@ const TuneState = struct {
     candidate_batch_max: u32,
     /// Tensor shapes for the workload (A, B, C for matmul).
     tensor_shapes: []const []const i64,
-    tensor_dtype: DType,
+    tensor_dtype: ElementType,
     measurement: runtime.TimeEvaluatorOptions,
 };
 
@@ -95,7 +73,7 @@ const TuneState = struct {
 /// ReplayTrace samples schedules from TVM's target-selected design space. The
 ///  builder compiles candidates to shared libraries and the runner measures
 ///  them. TVM persists workloads and measurements in `opts.work_cache`. The
-///  orchestration corresponds to `python/tvm/meta_schedule/tune.py::tune_tasks`.
+///  workload directory partitions evidence by build and timing protocol.
 pub fn tune(
     /// I/O context used by filesystem and timing operations.
     io: std.Io,
@@ -103,15 +81,13 @@ pub fn tune(
     allocator: std.mem.Allocator,
     /// TIR module supplied to MetaSchedule.
     ir_mod: IRModule,
-    /// TVM compilation target.
-    target: Target,
     /// Element type shared by the matrix-multiply inputs and output.
-    tensor_dtype: DType,
+    tensor_dtype: ElementType,
     /// Input and output tensor shapes used by the runner.
     tensor_shapes: []const []const i64,
     /// Compiler, device, cache, and search limits.
     opts: TuneOpts,
-) !Result {
+) !IRModule {
     try validate_tuning_limits(
         opts.max_trials,
         opts.trials_per_iter,
@@ -119,21 +95,15 @@ pub fn tune(
     );
 
     try integration_runtime.ensure_loaded(.compiler);
-    const kind = opts.compile.target;
+    const kind = opts.resolved.kind();
+    const target = opts.resolved.target();
 
     if (kind == .cuda) {
         if (comptime build_options.has_nvrtc) {
-            const nvrtc_config = opts.compile.nvrtc orelse {
-                log.err("TVM CUDA tuning requires resolved NVRTC configuration", .{});
-                return error.MissingNvrtcConfig;
-            };
-            const gpu_arch = opts.gpu_arch orelse {
-                log.err("TVM CUDA target has no resolved NVRTC architecture", .{});
-                return error.MissingNvrtcArchitecture;
-            };
+            const cuda = opts.resolved.payload.cuda;
             nvrtc_callback.register(
-                nvrtc_config,
-                gpu_arch,
+                cuda.inputs.nvrtc,
+                cuda.gpu_arch,
             ) catch |err| {
                 log.err("failed to register NVRTC callback: {s}", .{@errorName(err)});
                 return err;
@@ -145,8 +115,7 @@ pub fn tune(
         try cuda_intrinsics.ensure_registered(
             io,
             allocator,
-            opts.compile.cuda_intrinsics_path orelse
-                return error.MissingCudaIntrinsics,
+            opts.resolved.payload.cuda.inputs.intrinsics_path,
         );
     }
 
@@ -205,8 +174,8 @@ pub fn tune(
         .allocator = allocator,
         .target = target,
         .target_kind = kind,
-        .linker = opts.compile.linker,
-        .device_ordinal = opts.device.ordinal,
+        .linker = opts.linker,
+        .device_ordinal = opts.resolved.device.ordinal,
         .candidate_cache = candidate_cache,
         .candidate_batch_max = opts.trials_per_iter,
         .tensor_shapes = tensor_shapes,
@@ -267,21 +236,12 @@ pub fn tune(
     for (samples) |sample| sum += sample;
     const mean = sum / @as(f64, @floatFromInt(samples.len));
 
-    const scheduled_module = try database.query_module(
-        allocator,
-        ir_mod,
-        target,
-        "main",
-    ) orelse return error.NoTuningRecords;
+    const scheduled_module = try best_record.replay_module(allocator);
     log.info("tuning complete: {d} samples, {d:.2} us mean", .{
         samples.len,
         mean * 1e6,
     });
-    return .{
-        .module = scheduled_module,
-        .mean_time_seconds = mean,
-        .sample_count = samples.len,
-    };
+    return scheduled_module;
 }
 
 /// Builder callback: compiles TIR candidates to .so artifacts.
@@ -342,7 +302,7 @@ fn build_callback_impl(
     return results_arr.take_value();
 }
 
-/// Compile one `BuilderInput` from `python/tvm/meta_schedule/builder/builder.py`.
+/// Compile a scheduled candidate for its detected target.
 fn build_candidate(state: *TuneState, input_value: Value, build_id: u32) !OwnedValue {
     const allocator = state.allocator;
     const input = try ms.BuilderInput.from_value(input_value);
@@ -429,7 +389,7 @@ fn run_callback_impl(
     return results_arr.take_value();
 }
 
-/// Measure one `RunnerInput` from `python/tvm/meta_schedule/runner/runner.py`.
+/// Measure the candidate file requested by the runner.
 fn run_candidate(state: *TuneState, input_value: Value) !OwnedValue {
     const allocator = state.allocator;
     const input = try ms.RunnerInput.from_value(input_value);
@@ -440,17 +400,16 @@ fn run_candidate(state: *TuneState, input_value: Value) !OwnedValue {
 
     var loaded = try RuntimeModule.load_from_file(allocator, path_z);
     defer loaded.deinit();
-    const run_times = try benchmark_kernel(state, loaded);
+    const run_times = try benchmark_kernel(state.allocator, loaded, state.tensor_dtype, state.tensor_shapes, state.target_kind, state.device_ordinal, state.measurement);
     defer allocator.free(run_times);
     return try make_runner_success(allocator, run_times);
 }
 
 /// Measure a compiled kernel with TVM's target timer.
 ///
-/// The returned repeat averages belong to `state.allocator`.
-fn benchmark_kernel(state: *TuneState, module: RuntimeModule) ![]f64 {
-    const allocator = state.allocator;
-    const dev_type: dlpack.DeviceType = switch (state.target_kind) {
+/// The caller frees the returned repeat averages with `allocator`.
+fn benchmark_kernel(allocator: std.mem.Allocator, module: RuntimeModule, element: ElementType, shapes: []const []const i64, kind: TargetKind, ordinal: i32, protocol: runtime.TimeEvaluatorOptions) ![]f64 {
+    const dev_type: dlpack.DeviceType = switch (kind) {
         .cpu => .cpu,
         .cuda => .cuda,
     };
@@ -461,8 +420,8 @@ fn benchmark_kernel(state: *TuneState, module: RuntimeModule) ![]f64 {
         tensors.deinit(allocator);
     }
 
-    for (state.tensor_shapes) |shape| {
-        const dtype = try dlpack_dtype(state.tensor_dtype);
+    for (shapes) |shape| {
+        const dtype = ffi.dlpack_dtype(element.dtype());
         const bytes = dlpack.byte_count(shape, dtype) catch
             return error.InvalidTensorLayout;
 
@@ -477,7 +436,7 @@ fn benchmark_kernel(state: *TuneState, module: RuntimeModule) ![]f64 {
                 shape,
                 dtype,
                 dev_type,
-                state.device_ordinal,
+                ordinal,
             );
         };
         try tensors.append(allocator, tensor);
@@ -487,19 +446,18 @@ fn benchmark_kernel(state: *TuneState, module: RuntimeModule) ![]f64 {
         allocator,
         "main",
         dev_type,
-        state.device_ordinal,
-        state.measurement,
+        ordinal,
+        protocol,
     );
     defer evaluator.deinit();
     return try evaluator.measure(allocator, tensors.items);
 }
 
-fn dlpack_dtype(dtype: DType) !dlpack.DataType {
-    return switch (dtype) {
-        .f16 => .f16_,
-        .f32 => .f32_,
-        else => error.UnsupportedDType,
-    };
+/// Measure the loaded published generation with the declared tensor layout and protocol.
+///  The caller frees the repeat averages.
+pub fn measure_artifact(allocator: std.mem.Allocator, module: RuntimeModule, element: ElementType, shapes: []const []const i64, dev: device.Device, kind: TargetKind, protocol: runtime.TimeEvaluatorOptions) ![]f64 {
+    try protocol.validate();
+    return benchmark_kernel(allocator, module, element, shapes, kind, dev.ordinal, protocol);
 }
 
 fn validate_tuning_limits(

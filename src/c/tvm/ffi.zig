@@ -9,6 +9,38 @@ const c = @import("c.zig");
 
 const log = std.log.scoped(.@"zg/tvm_ffi");
 
+/// Convert every shared dtype to its DLPack representation at the format boundary.
+pub fn dlpack_dtype(dtype: @import("dtype").DType) @import("../dlpack.zig").DataType {
+    const code: @import("../dlpack.zig").DataTypeCode = switch (dtype) {
+        .f16, .f32, .f64 => .float,
+        .bf16 => .bfloat,
+        .i8, .i32, .i64 => .int,
+        .u8, .u32, .u64 => .uint,
+        .bool => .bool_,
+    };
+    return .{ .code = code, .bits = @intCast(dtype.size_in_bytes() * 8), .lanes = 1 };
+}
+
+test "dlpack_dtype maps all shared dtypes independently of admission" {
+    inline for (std.meta.tags(@import("dtype").DType)) |dtype| {
+        const representation = dlpack_dtype(dtype);
+        try std.testing.expectEqual(dtype.size_in_bytes(), try representation.size_in_bytes());
+    }
+    try std.testing.expectEqual(@import("../dlpack.zig").DataTypeCode.bfloat, dlpack_dtype(.bf16).code);
+    const boolean = dlpack_dtype(.bool);
+    try std.testing.expectEqual(@import("../dlpack.zig").DataTypeCode.bool_, boolean.code);
+    try std.testing.expectEqual(@as(u8, 8), boolean.bits);
+    try std.testing.expectEqual(@as(u16, 1), boolean.lanes);
+}
+
+/// Borrow a tensor's DLPack descriptor for the lifetime of the tensor.
+///  The descriptor preserves the backing buffer's ownership.
+pub fn tensor_dlpack(value: Value) TvmError!*const @import("../dlpack.zig").Tensor {
+    try value.require_type_index(c.kTVMFFITensor);
+    const bytes: [*]const u8 = @ptrCast(value.as_object());
+    return @ptrCast(@alignCast(bytes + @sizeOf(c.TVMFFIObject)));
+}
+
 /// TVM `AnyView` representation.
 pub const Value = struct {
     raw: c.TVMFFIAny,
@@ -138,7 +170,7 @@ pub const Value = struct {
     /// Extract an integer, handling both raw kTVMFFIInt and IntImm objects.
     ///
     /// TVM sometimes returns integers as raw `kTVMFFIInt` values and sometimes
-    /// as `IntImm` objects with a `value` field. This method tries both.
+    ///  as `IntImm` objects with a `value` field. This method tries both.
     pub fn to_int(self: Value) TvmError!i64 {
         if (self.as_int()) |v| return v;
         var field = try get_field(self, "value");
@@ -648,7 +680,7 @@ fn call_handle(allocator: std.mem.Allocator, func: c.TVMFFIObjectHandle, args: [
 }
 
 /// Shared implementation: convert Value args to raw TVMFFIAny and call.
-/// Uses a stack buffer for <=16 args, heap for larger lists.
+///  Uses a stack buffer for <=16 args, heap for larger lists.
 fn call_with_values(allocator: std.mem.Allocator, func: c.TVMFFIObjectHandle, args: []const Value) TvmError!OwnedValue {
     if (args.len <= 16) {
         var raw_args: [16]c.TVMFFIAny = undefined;
@@ -772,7 +804,7 @@ fn find_direct_field(type_info: *const c.TVMFFITypeInfo, field_name: []const u8)
 /// List all TVM global function names, sorted alphabetically.
 ///
 /// Uses `ffi.FunctionListGlobalNamesFunctor` to enumerate all registered
-/// TVM functions. The caller frees the slice and each name.
+///  TVM functions. The caller frees the slice and each name.
 pub fn list_global_names(allocator: std.mem.Allocator) ![][]const u8 {
     var function = try call_global_take(PackedFunction, allocator, "ffi.FunctionListGlobalNamesFunctor", &.{});
     defer function.deinit();
