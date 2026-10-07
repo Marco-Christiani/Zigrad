@@ -8,16 +8,16 @@
 }: let
   safetensorsSource = {
     repository = "https://github.com/Marco-Christiani/safetensors-zg";
-    revision = "942ac8fd88b7b087679fbddde99c0a38dd3a2fce";
-    revision_url = "https://github.com/Marco-Christiani/safetensors-zg/commit/942ac8fd88b7b087679fbddde99c0a38dd3a2fce";
-    file_url_template = "https://github.com/Marco-Christiani/safetensors-zg/blob/942ac8fd88b7b087679fbddde99c0a38dd3a2fce/src/{path}";
+    revision = "2537a1ae8c8a5e3f347c2605eae905f26db24f5e";
+    revision_url = "https://github.com/Marco-Christiani/safetensors-zg/commit/2537a1ae8c8a5e3f347c2605eae905f26db24f5e";
+    file_url_template = "https://github.com/Marco-Christiani/safetensors-zg/blob/2537a1ae8c8a5e3f347c2605eae905f26db24f5e/src/{path}";
   };
   safetensors = {
-    name = "safetensors_zg-0.0.1-dRXUiKDwAACCb13L0frixHBXg-rZ_rQru5ZjxFb0lfZa";
+    name = "safetensors_zg-0.0.1-dRXUiNjwAACWR1_WcxxaEM_wzkIqASiNvP_dgwuIPnGO";
     path = fetchgit {
       url = safetensorsSource.repository;
       rev = safetensorsSource.revision;
-      hash = "sha256-TxjhAaY/arJfW+v/YqWgLwsf6PRzPDeYuiv+um3sf/A=";
+      hash = "sha256-qCiN+72qtxCYgxdiJH/gdZOolEiwLGZcymcQb3ENys8=";
     };
   };
 
