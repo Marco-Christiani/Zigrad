@@ -992,13 +992,13 @@ fn build_kernelized_demo_program(
     }
 
     // Region names share the program lifetime of their function references.
-    const first_name = try std.fmt.allocPrint(b.alloc(), "{s}_region_0", .{provider_names[0]});
+    const first_name = try (b.alloc()).print("{s}_region_0", .{provider_names[0]});
     if (explicit_requests) try b.push_region(first_name, &.{zg.kernel.provider_annotation(provider_names[0])});
     var acc_id = try b.mm(a_id, b_id);
     if (explicit_requests) try b.pop_region();
 
     for (provider_names[1..], 1..) |pname, i| {
-        const rn = try std.fmt.allocPrint(b.alloc(), "{s}_region_{d}", .{ pname, i });
+        const rn = try (b.alloc()).print("{s}_region_{d}", .{ pname, i });
         if (explicit_requests) try b.push_region(rn, &.{zg.kernel.provider_annotation(pname)});
         const mm_id = try b.mm(a_id, b_id);
         if (explicit_requests) try b.pop_region();

@@ -840,9 +840,9 @@ test "TVM publication measures the selected file and preserves current on failur
         defer reused_top.deinit();
         try std.testing.expectEqual(@as(usize, 1), try reused_top.len(allocator));
     }
-    inline for (std.meta.fields(tvm_runtime.TimeEvaluatorOptions)) |field| {
+    inline for (@field(@typeInfo(tvm_runtime.TimeEvaluatorOptions), @tagName(@typeInfo(tvm_runtime.TimeEvaluatorOptions))).field_names) |field_name| {
         var changed_protocol = protocol;
-        @field(changed_protocol, field.name) += 1;
+        @field(changed_protocol, field_name) += 1;
         const changed_key = artifact.protocol_key(changed_protocol);
         const changed_partition = try partitions.subdir(io, changed_key.slice(), .{});
         var changed_workload_file = try changed_partition.join("workload.json");

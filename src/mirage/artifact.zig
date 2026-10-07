@@ -81,7 +81,7 @@ pub fn encode(allocator: std.mem.Allocator, artifact: Artifact) EncodeError![]co
         for (k.block_dim) |d| try writer.writeInt(u32, d, .little);
         try writer.writeInt(u32, @intCast(k.args.len), .little);
         for (k.args) |arg| {
-            try writer.writeInt(u32, @intFromEnum(arg.source), .little);
+            try writer.writeInt(u32, @backingInt(arg.source), .little);
             try writer.writeInt(u64, arg.index_or_offset, .little);
         }
     }

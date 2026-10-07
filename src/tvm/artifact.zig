@@ -173,9 +173,9 @@ pub fn protocol_key(protocol: tvm_runtime.TimeEvaluatorOptions) CacheKey {
 
 test "protocol_key distinguishes each timing setting" {
     const base = protocol_key(.{});
-    inline for (std.meta.fields(tvm_runtime.TimeEvaluatorOptions)) |field| {
+    inline for (@field(@typeInfo(tvm_runtime.TimeEvaluatorOptions), @tagName(@typeInfo(tvm_runtime.TimeEvaluatorOptions))).field_names) |field_name| {
         var protocol: tvm_runtime.TimeEvaluatorOptions = .{};
-        @field(protocol, field.name) += 1;
+        @field(protocol, field_name) += 1;
         const changed = protocol_key(protocol);
         try std.testing.expect(!std.mem.eql(u8, base.slice(), changed.slice()));
     }

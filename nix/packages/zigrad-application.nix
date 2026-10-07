@@ -22,7 +22,7 @@
   needsCudaDriverRunpath ? false,
   targetPkgs ? null,
   zigArgs ? [],
-  optimize ? "ReleaseFast",
+  optimize ? "fast",
   runTests ? false,
   testProgram ? null,
   withRuntimeEnvironment ? true,

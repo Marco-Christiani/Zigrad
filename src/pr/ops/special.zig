@@ -41,6 +41,6 @@ pub const call = struct {
     }
 
     pub fn format(writer: *types.Writer, _: *const pr.Op, cp: pr.CallParams) types.FormatError!void {
-        try writer.print("callee=@{d}", .{@intFromEnum(cp.callee)});
+        try writer.print("callee=@{d}", .{@backingInt(cp.callee)});
     }
 };

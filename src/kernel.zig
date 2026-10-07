@@ -408,7 +408,7 @@ pub fn make_selection_key(
     errdefer output.deinit();
     const writer = &output.writer;
     try writer.print("kp-occurrence:fn={d}:ops={d}:", .{
-        @intFromEnum(candidate.source_function),
+        @backingInt(candidate.source_function),
         candidate.op_ids.len,
     });
     for (candidate.op_ids) |op_id| try writer.print("{d}:", .{op_id});
@@ -754,7 +754,7 @@ test validate_providers {
 
 test make_implementation_key {
     const testing = std.testing;
-    const function_fingerprint = fingerprint.Function{ .bytes = .{0x5a} ** 32 };
+    const function_fingerprint = fingerprint.Function{ .bytes = @splat(0x5a) };
     const providers = ProviderRequest{ .many = &.{ "tvm", "mirage" } };
 
     const first = try make_implementation_key(
@@ -793,15 +793,15 @@ test make_implementation_key {
 
 test make_selection_key {
     const testing = std.testing;
-    const function_fingerprint = fingerprint.Function{ .bytes = .{0x5a} ** 32 };
+    const function_fingerprint = fingerprint.Function{ .bytes = @splat(0x5a) };
     const provider_names = [_][]const u8{"tvm"};
     const first_candidate = CandidateRegion{
-        .source_function = @enumFromInt(7),
+        .source_function = @fromBackingInt(@intCast(7)),
         .op_ids = &.{ 11, 12 },
         .provider_names = &provider_names,
     };
     const second_candidate = CandidateRegion{
-        .source_function = @enumFromInt(7),
+        .source_function = @fromBackingInt(@intCast(7)),
         .op_ids = &.{ 21, 22 },
         .provider_names = &provider_names,
     };

@@ -1,8 +1,9 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const test_filters = b.option([]const []const u8, "test-filter", "Select matching test names") orelse &.{};
     const strip = b.option(bool, "strip", "Omit debug information from installed executables");
 
     const runtime_root_opt = b.option([]const u8, "runtime", "Override runtime bundle root (dev convenience)");
@@ -103,7 +104,7 @@ pub fn build(b: *std.Build) void {
     if (sdk_include) |include| zigrad_mod.addIncludePath(.{ .cwd_relative = include });
 
     const xla_proto_modules = if (use_pjrt) modules: {
-        const protobuf_dep = b.lazyDependency("protobuf", .{}) orelse return;
+        const protobuf_dep = try b.dependencyLazy("protobuf", .{});
         const protobuf_mod = protobuf_dep.module("protobuf");
         const xla_pb_mod = b.createModule(.{
             .root_source_file = b.path("src/c/xla/proto/xla.pb.zig"),
@@ -235,24 +236,29 @@ pub fn build(b: *std.Build) void {
     const cli_metadata_mod = b.createModule(.{
         .root_source_file = b.path("src/cli/render.zig"),
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     });
     const cli_metadata_exe = b.addExecutable(.{
         .name = "zigrad-cli-meta",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/cli_meta.zig"),
             .target = b.graph.host,
-            .optimize = .ReleaseSafe,
+            .optimize = .safe,
             .imports = &.{
                 .{ .name = "zigrad_cli_metadata", .module = cli_metadata_mod },
             },
         }),
     });
     const generate_cli_metadata = b.addRunArtifact(cli_metadata_exe);
-    generate_cli_metadata.addArg(b.install_prefix);
+    const cli_metadata_directory = generate_cli_metadata.addOutputDirectoryArg2("cli-meta", .{});
     generate_cli_metadata.addArg(version);
+    const cli_metadata_install = b.addInstallDirectory(.{
+        .source_dir = cli_metadata_directory,
+        .install_dir = .prefix,
+        .install_subdir = "",
+    });
     const cli_metadata_step = b.step("cli-meta", "Generate completions and the zigrad manpage");
-    cli_metadata_step.dependOn(&generate_cli_metadata.step);
+    cli_metadata_step.dependOn(&cli_metadata_install.step);
 
     const gen_cli_meta = b.option(
         bool,
@@ -260,17 +266,17 @@ pub fn build(b: *std.Build) void {
         "Install completions and the zigrad manpage",
     ) orelse false;
     if (gen_cli_meta)
-        b.getInstallStep().dependOn(&generate_cli_metadata.step);
+        b.getInstallStep().dependOn(&cli_metadata_install.step);
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     b.step("run", "Run the Zigrad CLI").dependOn(&run_cmd.step);
 
     const lib_tests = b.addTest(.{
         .name = "zigrad-tests",
         .root_module = zigrad_mod,
-        .filters = b.args orelse &.{},
+        .filters = test_filters,
     });
     if (use_mlir) link_mlir_stablehlo_capi(lib_tests, sdk_lib.?);
     if (has_external_integration)
@@ -292,7 +298,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "zigrad", .module = zigrad_mod },
             },
         }),
-        .filters = b.args orelse &.{},
+        .filters = test_filters,
     });
     if (use_mlir) link_mlir_stablehlo_capi(cli_tests, sdk_lib.?);
     if (has_external_integration)
@@ -315,7 +321,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "pr", .module = pr_mod },
             },
         }),
-        .filters = b.args orelse &.{},
+        .filters = test_filters,
     });
     if (use_mlir) link_mlir_stablehlo_capi(pr_seam_tests, sdk_lib.?);
     if (has_external_integration)
@@ -348,7 +354,7 @@ pub fn build(b: *std.Build) void {
         const tests = b.addTest(.{
             .name = entry.name,
             .root_module = entry.module,
-            .filters = b.args orelse &.{},
+            .filters = test_filters,
         });
         if (use_mlir) link_mlir_stablehlo_capi(tests, sdk_lib.?);
         if (has_external_integration)
@@ -439,7 +445,7 @@ fn shared_module(
     b: *std.Build,
     root: []const u8,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
 ) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path(root),
@@ -477,6 +483,7 @@ fn link_iree(mod: *std.Build.Module, sdk_lib: []const u8, embedded_elf: bool) vo
     // Link FlatCC archives when the runtime package emits them separately.
     for ([_][]const u8{ "libflatcc_parsing.a", "libflatcc_runtime.a" }) |name| {
         const path = b.fmt("{s}/{s}", .{ sdk_lib, name });
+        b.dependOnFileMetadata(.{ .cwd_relative = path });
         if (std.Io.Dir.cwd().access(b.graph.io, path, .{})) |_| {
             mod.addObjectFile(.{ .cwd_relative = path });
         } else |_| {}
@@ -497,7 +504,7 @@ fn link_iree(mod: *std.Build.Module, sdk_lib: []const u8, embedded_elf: bool) vo
 
 fn resolve_absolute_path(b: *std.Build, path: []const u8) []const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
-    const build_root = b.build_root.path orelse ".";
+    const build_root = b.fmt("{f}", .{b.root});
     return std.fs.path.join(b.allocator, &.{ build_root, path }) catch @panic("path join failed");
 }
 
@@ -544,15 +551,12 @@ fn add_runtime_bundle(b: *std.Build, exe: *std.Build.Step.Compile, options: Runt
     if (!options.install_runtime_link) return;
 
     const runtime_root_abs = resolve_absolute_path(b, options.runtime_root);
-    const link_step = b.addSystemCommand(&[_][]const u8{
-        "bash",
-        "-lc",
-        std.fmt.allocPrint(b.allocator,
-            \\set -euo pipefail
-            \\prefix="{s}"
-            \\mkdir -p "$prefix"
-            \\ln -sfn "{s}" "$prefix/runtime"
-        , .{ b.install_prefix, runtime_root_abs }) catch @panic("OOM"),
+    const link_step = b.addSystemCommand(&.{
+        "bash",                                           "-eu",          "-c",
+        "mkdir -p \"$1\"; ln -sfn \"$2\" \"$1/runtime\"", "runtime-link",
     });
+    link_step.addDirectoryArg2(.{ .relative = .{ .base = .install_prefix } }, .{ .make_absolute = true });
+    link_step.addArg(runtime_root_abs);
+    link_step.has_side_effects = true;
     exe.step.dependOn(&link_step.step);
 }

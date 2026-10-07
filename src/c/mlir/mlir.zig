@@ -94,7 +94,7 @@ pub const Context = struct {
         return c.mlirContextIsRegisteredOperation(self._inner, string_ref(op));
     }
 
-    pub fn location(self: Context, src: std.builtin.SourceLocation) Location {
+    pub fn location(self: Context, src: std.lang.SourceLocation) Location {
         return Location.from_src(self, src);
     }
 
@@ -975,11 +975,11 @@ pub const Operation = struct {
             (struct {
                 pub fn callback(op: c.MlirOperation, ctx_: ?*anyopaque) callconv(.c) c.MlirWalkResult {
                     const inner_ctx_: *ContextType = @ptrCast(@alignCast(ctx_));
-                    return @intFromEnum(walkfn(inner_ctx_.ctx, .{ ._inner = op }));
+                    return @backingInt(walkfn(inner_ctx_.ctx, .{ ._inner = op }));
                 }
             }).callback,
             &inner_ctx,
-            @intFromEnum(order),
+            @backingInt(order),
         );
     }
 
@@ -1568,7 +1568,7 @@ pub const Location = struct {
     pub const eql = helpers.eql(Location, c.mlirLocationEqual);
     pub const format = helpers.format(Location, c.mlirLocationPrint);
 
-    pub fn from_src(ctx: Context, src: std.builtin.SourceLocation) Location {
+    pub fn from_src(ctx: Context, src: std.lang.SourceLocation) Location {
         return .{ ._inner = c.mlirLocationFileLineColGet(
             ctx._inner,
             string_ref(src.file),

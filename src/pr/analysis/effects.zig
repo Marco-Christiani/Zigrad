@@ -64,6 +64,6 @@ test function_may_have_side_effects {
     program.functions()[2].ops[0].params.call.callee = caller_id;
     try testing.expect(function_may_have_side_effects(&program, program.functions()[2]));
 
-    program.functions()[2].ops[0].params.call.callee = @enumFromInt(99);
+    program.functions()[2].ops[0].params.call.callee = @fromBackingInt(@intCast(99));
     try testing.expect(function_may_have_side_effects(&program, program.functions()[2]));
 }

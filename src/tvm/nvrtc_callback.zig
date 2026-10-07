@@ -155,7 +155,7 @@ fn compile_with_nvrtc(
     code: []const u8,
     snapshot: CallbackState.Snapshot,
 ) cuda_nvrtc.CompileError![]const u8 {
-    const defines: []const []const u8 = switch (builtin.cpu.arch) {
+    const defines: []const []const u8 = switch (builtin.target.cpu.arch) {
         .x86_64 => &.{"__x86_64__"},
         else => &.{},
     };

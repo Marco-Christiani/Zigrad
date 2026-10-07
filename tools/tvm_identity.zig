@@ -28,9 +28,10 @@ const Walk = struct {
         const key = b.fmt("{x}:{s}", .{ @intFromPtr(module), path });
         if (self.visited.contains(key)) return;
         try self.visited.put(key, {});
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, b.pathFromRoot(path), b.allocator, .limited(4 * 1024 * 1024));
+        b.dependOnFileContents(b.path(path));
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, try b.root.joinString(b.allocator, path), b.allocator, .limited(4 * 1024 * 1024));
         try self.inputs.put(path, bytes);
-        const source = try b.allocator.dupeZ(u8, bytes);
+        const source = try b.allocator.dupeSentinel(u8, bytes, 0);
         var tokenizer = std.zig.Tokenizer.init(source);
         while (true) {
             const token = tokenizer.next();
@@ -44,11 +45,12 @@ const Walk = struct {
             if (literal.tag != .string_literal) return error.UnresolvedDynamicImport;
             const imported = try std.zig.string_literal.parseAlloc(b.allocator, source[literal.loc.start..literal.loc.end]);
             if (embedded or std.mem.endsWith(u8, imported, ".zig")) {
-                const absolute = try std.fs.path.resolve(b.allocator, &.{ b.pathFromRoot(std.fs.path.dirname(path) orelse "."), imported });
-                const relative = try std.fs.path.relative(b.allocator, b.build_root.path orelse ".", null, b.build_root.path orelse ".", absolute);
+                const absolute = try std.fs.path.resolve(b.allocator, &.{ try b.root.joinString(b.allocator, std.fs.path.dirname(path) orelse "."), imported });
+                const relative = try std.fs.path.relative(b.allocator, try b.root.toString(b.allocator), null, try b.root.toString(b.allocator), absolute);
                 if (std.mem.startsWith(u8, relative, "..")) return error.SourceOutsideRepository;
                 try self.edge(path, imported, b.fmt("{s}:{s}", .{ if (embedded) "embedded" else "relative", relative }));
                 if (embedded) {
+                    b.dependOnFileContents(b.path(relative));
                     const data = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, absolute, b.allocator, .limited(64 * 1024 * 1024));
                     try self.inputs.put(relative, data);
                 } else try self.visit(module, relative);
@@ -63,8 +65,13 @@ const Walk = struct {
                 switch (root) {
                     .generated => try self.edge(path, imported, "external:translated-C"),
                     else => {
-                        const absolute = root.getPath(b);
-                        const relative = try std.fs.path.relative(b.allocator, b.build_root.path orelse ".", null, b.build_root.path orelse ".", absolute);
+                        const absolute = switch (root) {
+                            .src_path => |src| try src.owner.root.joinString(b.allocator, src.sub_path),
+                            .dependency => |dep| try dep.dependency.builder.root.joinString(b.allocator, dep.sub_path),
+                            .cwd_relative => |cwd| cwd,
+                            else => return error.UnresolvedModuleRoot,
+                        };
+                        const relative = try std.fs.path.relative(b.allocator, try b.root.toString(b.allocator), null, try b.root.toString(b.allocator), absolute);
                         if (std.mem.startsWith(u8, relative, "..")) {
                             // Dependency roots are pinned by the package graph.
                             try self.edge(path, imported, "external:package");

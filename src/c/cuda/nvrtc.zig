@@ -100,11 +100,11 @@ pub fn compile(
     defer arena.deinit();
     const temp = arena.allocator();
 
-    const source_z = try temp.dupeZ(u8, source);
-    const name_z = try temp.dupeZ(u8, options.program_name);
+    const source_z = try temp.dupeSentinel(u8, source, 0);
+    const name_z = try temp.dupeSentinel(u8, options.program_name, 0);
     const raw_options = try temp.alloc([*:0]const u8, options.compiler_options.len);
     for (options.compiler_options, raw_options) |option, *raw_option| {
-        raw_option.* = (try temp.dupeZ(u8, option)).ptr;
+        raw_option.* = (try temp.dupeSentinel(u8, option, 0)).ptr;
     }
 
     var program: nvrtcProgram = std.mem.zeroes(nvrtcProgram);

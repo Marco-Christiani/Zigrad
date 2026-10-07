@@ -462,9 +462,9 @@ fn device_int_attribute(
         std.heap.c_allocator,
         "runtime.GetDeviceAttr",
         &.{
-            Value.int(@intFromEnum(dlpack.DeviceType.cuda)),
+            Value.int(@backingInt(dlpack.DeviceType.cuda)),
             Value.int(device_ordinal),
-            Value.int(@intFromEnum(attribute)),
+            Value.int(@backingInt(attribute)),
         },
     );
     defer result.deinit();
@@ -480,9 +480,9 @@ fn device_string_attribute(
         allocator,
         "runtime.GetDeviceAttr",
         &.{
-            Value.int(@intFromEnum(dlpack.DeviceType.cuda)),
+            Value.int(@backingInt(dlpack.DeviceType.cuda)),
             Value.int(device_ordinal),
-            Value.int(@intFromEnum(attribute)),
+            Value.int(@backingInt(attribute)),
         },
     );
     defer result.deinit();
@@ -529,11 +529,7 @@ fn cuda_architecture(
         else => return error.InvalidComputeCapability,
     };
     if (architecture_len == 0) return error.InvalidComputeCapability;
-    return try std.fmt.allocPrint(
-        allocator,
-        "sm_{s}",
-        .{architecture[0..architecture_len]},
-    );
+    return try allocator.print("sm_{s}", .{architecture[0..architecture_len]});
 }
 
 test cuda_target_description {
@@ -763,7 +759,7 @@ pub fn register_tensor_intrin_bundle(
         defer name_value.deinit();
         const name = try name_value.borrow().dupe_string(allocator);
         defer allocator.free(name);
-        const name_z = try allocator.dupeZ(u8, name);
+        const name_z = try allocator.dupeSentinel(u8, name, 0);
         defer allocator.free(name_z);
 
         var intrinsic = try entries.get(allocator, index + 1);

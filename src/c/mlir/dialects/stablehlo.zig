@@ -467,7 +467,7 @@ pub fn reduce(
     const MaxBlockArguments = 32;
 
     const block_n_args = inputs.len + init_values.len;
-    const locations = ([_]mlir.Location{mlir.Location.unknown(ctx)} ** MaxBlockArguments)[0..block_n_args];
+    const locations = (@as([MaxBlockArguments]mlir.Location, @splat(mlir.Location.unknown(ctx))))[0..block_n_args];
     var reduce_elem_types: [MaxBlockArguments]mlir.Type = undefined;
     for (inputs, 0..) |input, i| {
         const arg_type: mlir.Type = .tensor(&.{}, element_type_or_self(input.get_type()));
@@ -509,7 +509,7 @@ pub fn sort(
 ) mlir.Operation {
     const MaxBlockArguments = 32;
 
-    const locations = ([_]mlir.Location{mlir.Location.unknown(ctx)} ** MaxBlockArguments)[0 .. inputs.len * 2];
+    const locations = (@as([MaxBlockArguments]mlir.Location, @splat(mlir.Location.unknown(ctx))))[0 .. inputs.len * 2];
     var sort_elem_types: [MaxBlockArguments]mlir.Type = undefined;
     for (inputs, 0..) |input, i| {
         const arg_type: mlir.Type = .tensor(&.{}, element_type_or_self(input.get_type()));
@@ -775,7 +775,7 @@ pub fn custom_call(ctx: mlir.Context, inputs: []const mlir.Value, opts: CustomCa
     const MAX_RESULTS = 16;
 
     const backend_config = opts.backend_config orelse mlir.Attribute.string(ctx, "");
-    if (@intFromEnum(opts.api_version) < @intFromEnum(CustomCallOpts.ApiVersion.typed_ffi)) {
+    if (@backingInt(opts.api_version) < @backingInt(CustomCallOpts.ApiVersion.typed_ffi)) {
         std.debug.assert(backend_config.is_a(mlir.StringAttribute));
     } else {
         std.debug.assert(backend_config.is_a(mlir.DictionaryAttribute));
@@ -783,7 +783,7 @@ pub fn custom_call(ctx: mlir.Context, inputs: []const mlir.Value, opts: CustomCa
 
     var attrs = BoundedArray(mlir.AttrTuple, 32){};
     attrs.append_slice_assume_capacity(&[_]mlir.AttrTuple{
-        .{ "api_version", .int(ctx, .i32, @intFromEnum(opts.api_version)) },
+        .{ "api_version", .int(ctx, .i32, @backingInt(opts.api_version)) },
         .{ "call_target_name", .string(ctx, opts.call_target_name) },
         .{ "has_side_effect", .boolean(ctx, opts.has_side_effect) },
         .{ "backend_config", backend_config },

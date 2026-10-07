@@ -127,9 +127,9 @@ const Symbols = struct {
 
     fn load(library: dylib.Library) LoadError!Symbols {
         var loaded: Symbols = undefined;
-        inline for (std.meta.fields(Symbols)) |field| {
-            const name = comptime "zg_mirage_" ++ field.name;
-            @field(loaded, field.name) = try load_symbol(field.type, library, name);
+        inline for (@field(@typeInfo(Symbols), @tagName(@typeInfo(Symbols))).field_names, @field(@typeInfo(Symbols), @tagName(@typeInfo(Symbols))).field_types) |field_name, field_type| {
+            const name = comptime "zg_mirage_" ++ field_name;
+            @field(loaded, field_name) = try load_symbol(field_type, library, name);
         }
         return loaded;
     }

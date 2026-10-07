@@ -25,17 +25,14 @@
     .fingerprint = 0x48e4161bdc5871da, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .safetensors_zg = .{
-            .url = "git+https://github.com/Marco-Christiani/safetensors-zg#942ac8fd88b7b087679fbddde99c0a38dd3a2fce",
-            .hash = "safetensors_zg-0.0.1-dRXUiKDwAACCb13L0frixHBXg-rZ_rQru5ZjxFb0lfZa",
-        },
+        .safetensors_zg = .{ .path = "vendor/safetensors-zg" },
         .protobuf = .{
             .lazy = true,
             // Upstream 5.0.0 (`Arwalk/zig-protobuf` 1f6cb06) is 0.16-clean
@@ -52,6 +49,7 @@
         "build.zig.zon",
         "src",
         "tools",
+        "vendor/safetensors-zg",
         // For example...
         //"LICENSE",
         //"README.md",

@@ -454,7 +454,7 @@ fn eval_reduce_sum(
     const in_ndim = in_shape.len;
 
     // Mark reduced axes
-    var is_reduced: [64]bool = .{false} ** 64;
+    var is_reduced: [64]bool = @splat(false);
     for (axes) |a| is_reduced[@intCast(a)] = true;
 
     // For each input element, accumulate into the right output position
@@ -494,7 +494,7 @@ fn eval_reduce_max(
     const in_shape = operand.shape;
     const in_ndim = in_shape.len;
 
-    var is_reduced: [64]bool = .{false} ** 64;
+    var is_reduced: [64]bool = @splat(false);
     for (axes) |a| is_reduced[@intCast(a)] = true;
 
     for (0..operand.data.len) |in_flat| {
@@ -587,13 +587,13 @@ fn eval_dot_general(
     const rhs_rank = rhs_shape.len;
 
     // Classify lhs dims
-    var lhs_is_batch: [64]bool = .{false} ** 64;
-    var lhs_is_contract: [64]bool = .{false} ** 64;
+    var lhs_is_batch: [64]bool = @splat(false);
+    var lhs_is_contract: [64]bool = @splat(false);
     for (dg.lhs_batch_dims) |d| lhs_is_batch[@intCast(d)] = true;
     for (dg.lhs_contracting_dims) |d| lhs_is_contract[@intCast(d)] = true;
 
-    var rhs_is_batch: [64]bool = .{false} ** 64;
-    var rhs_is_contract: [64]bool = .{false} ** 64;
+    var rhs_is_batch: [64]bool = @splat(false);
+    var rhs_is_contract: [64]bool = @splat(false);
     for (dg.rhs_batch_dims) |d| rhs_is_batch[@intCast(d)] = true;
     for (dg.rhs_contracting_dims) |d| rhs_is_contract[@intCast(d)] = true;
 
@@ -769,7 +769,7 @@ fn eval_gather(
     const out_ndim = out_shape.len;
     const index_vector_dim: usize = @intCast(gp.index_vector_dim);
 
-    var is_collapsed: [64]bool = .{false} ** 64;
+    var is_collapsed: [64]bool = @splat(false);
     for (gp.collapsed_slice_dims) |d| is_collapsed[@intCast(d)] = true;
 
     var result = try HostTensor.init(allocator, out_shape);
@@ -873,7 +873,7 @@ fn eval_scatter(
     const indices_shape = scatter_indices.shape;
     const index_vector_dim: usize = @intCast(sp.index_vector_dim);
 
-    var is_inserted: [64]bool = .{false} ** 64;
+    var is_inserted: [64]bool = @splat(false);
     for (sp.inserted_window_dims) |d| is_inserted[@intCast(d)] = true;
 
     // For each update element
@@ -883,7 +883,7 @@ fn eval_scatter(
 
         // Split update index into scatter dims and window dims
         // Scatter dims: dims not in update_window_dims
-        var is_window_dim: [64]bool = .{false} ** 64;
+        var is_window_dim: [64]bool = @splat(false);
         for (sp.update_window_dims) |d| is_window_dim[@intCast(d)] = true;
 
         // Build indices tensor index from scatter dims

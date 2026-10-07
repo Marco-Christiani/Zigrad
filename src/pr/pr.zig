@@ -457,20 +457,20 @@ fn dupe_param_value(comptime T: type, allocator: Allocator, value: T) Allocator.
         },
         .@"struct" => |info| blk: {
             var result: T = undefined;
-            inline for (info.fields) |field|
-                @field(result, field.name) = try dupe_param_value(field.type, allocator, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, field_type|
+                @field(result, field_name) = try dupe_param_value(field_type, allocator, @field(value, field_name));
             break :blk result;
         },
         .@"union" => |info| blk: {
             const Tag = info.tag_type orelse
                 @compileError("PR parameters require tagged unions");
             const tag = std.meta.activeTag(value);
-            inline for (info.fields) |field| {
-                if (tag == @field(Tag, field.name)) {
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                if (tag == @field(Tag, field_name)) {
                     break :blk @unionInit(
                         T,
-                        field.name,
-                        try dupe_param_value(field.type, allocator, @field(value, field.name)),
+                        field_name,
+                        try dupe_param_value(field_type, allocator, @field(value, field_name)),
                     );
                 }
             }
@@ -798,8 +798,8 @@ pub const Program = struct {
         /// Function whose referenced storage remains valid for the program lifetime.
         func: Function,
     ) FunctionRegistrationError!FunctionId {
-        const id: FunctionId = @enumFromInt(std.math.cast(u32, self.next_function_id) orelse
-            return error.FunctionIdExhausted);
+        const id: FunctionId = @fromBackingInt(@intCast(std.math.cast(u32, self.next_function_id) orelse
+            return error.FunctionIdExhausted));
         return try self.add_function_with_id(func, id);
     }
 
@@ -827,7 +827,7 @@ pub const Program = struct {
         errdefer std.debug.assert(self.function_id_by_name.remove(func.name));
         try self.assigned_function_ids.put(arena, id, {});
 
-        self.next_function_id = @max(self.next_function_id, @as(u64, @intFromEnum(id)) + 1);
+        self.next_function_id = @max(self.next_function_id, @as(u64, @backingInt(id)) + 1);
         return id;
     }
 
@@ -945,7 +945,7 @@ pub const Program = struct {
             const name = if (suffix == 0)
                 try a.dupe(u8, base)
             else
-                try std.fmt.allocPrint(a, "{s}_{d}", .{ base, suffix });
+                try a.print("{s}_{d}", .{ base, suffix });
             if (!self.function_name_available(name)) continue;
 
             try self.reserved_function_names.append(a, name);
@@ -1151,7 +1151,7 @@ pub fn validate_program(program: *const Program) ValidationError!void {
         if (program.get_function_id(func.name) != id or
             program.function_index_by_id.get(id) != i or
             !program.assigned_function_ids.contains(id) or
-            program.next_function_id <= @intFromEnum(id))
+            program.next_function_id <= @backingInt(id))
             return error.FunctionIdentityMismatch;
         try validate_function(func);
         try validate_annotations(func.annotations);
@@ -1164,7 +1164,7 @@ pub fn validate_program(program: *const Program) ValidationError!void {
 
             const call_params = op.params.call;
             const callee_func = program.get_function_by_id(call_params.callee) orelse {
-                pr_log.err("call references unknown function id {d} in '{s}'", .{ @intFromEnum(call_params.callee), func.name });
+                pr_log.err("call references unknown function id {d} in '{s}'", .{ @backingInt(call_params.callee), func.name });
                 return error.CallUnresolvedCallee;
             };
 
@@ -1371,7 +1371,7 @@ pub const FunctionBuilder = struct {
     /// Pop the most recent annotation region.
     pub fn pop_region(self: *FunctionBuilder) BuildError!void {
         const a = self.alloc();
-        const entry = self.region_stack.getLastOrNull() orelse return;
+        const entry = self.region_stack.last() orelse return;
         const op_end: u32 = @intCast(self.ops_list.items.len);
         if (op_end > entry.start_index) {
             try self.completed_regions.ensureUnusedCapacity(a, 1);
@@ -1641,7 +1641,7 @@ pub const FunctionBuilder = struct {
     /// Input arity and tensor signatures must match the registered function.
     pub fn call(self: *FunctionBuilder, callee_id: FunctionId, inputs: []const *Var) BuildError!*Op {
         const callee_fn = self.program.get_function_by_id(callee_id) orelse {
-            pr_log.err("call references unknown function id {d}", .{@intFromEnum(callee_id)});
+            pr_log.err("call references unknown function id {d}", .{@backingInt(callee_id)});
             return error.CallUnresolvedCallee;
         };
 
@@ -1798,14 +1798,14 @@ test "Program.add_function_with_id preserves explicit identities" {
         .var_count = 0,
     };
 
-    const explicit: FunctionId = @enumFromInt(7);
+    const explicit: FunctionId = @fromBackingInt(@intCast(7));
     try std.testing.expectEqual(explicit, try program.add_function_with_id(first, explicit));
     try std.testing.expectError(
         error.DuplicateFunctionId,
         program.add_function_with_id(second, explicit),
     );
     try std.testing.expectEqual(
-        @as(FunctionId, @enumFromInt(8)),
+        @as(FunctionId, @fromBackingInt(@intCast(8))),
         try program.add_function(second),
     );
 }
@@ -1834,21 +1834,21 @@ test "Program.restore discards appended functions and reservations" {
     var first = try FunctionBuilder.init(&program, "first");
     defer first.deinit();
     const first_id = try program.add_function(try first.finish(.{ .returns = &.{} }));
-    try std.testing.expectEqual(@as(FunctionId, @enumFromInt(0)), first_id);
+    try std.testing.expectEqual(@as(FunctionId, @fromBackingInt(@intCast(0))), first_id);
 
     const saved = program.checkpoint_appends();
     _ = try program.reserve_unique_function_name("reserved");
     var second = try FunctionBuilder.init(&program, "second");
     defer second.deinit();
     const second_id = try program.add_function(try second.finish(.{ .returns = &.{} }));
-    try std.testing.expectEqual(@as(FunctionId, @enumFromInt(1)), second_id);
+    try std.testing.expectEqual(@as(FunctionId, @fromBackingInt(@intCast(1))), second_id);
 
     program.restore_appends(saved);
     try std.testing.expectEqual(@as(usize, 1), program.functions().len);
     try std.testing.expectEqual(@as(usize, 0), program.checkpoint_appends().reservation_count);
     try std.testing.expect(program.get_function_id("first") != null);
     try std.testing.expect(program.get_function_id("second") == null);
-    try std.testing.expect(program.get_function_by_id(@enumFromInt(1)) == null);
+    try std.testing.expect(program.get_function_by_id(@fromBackingInt(@intCast(1))) == null);
     try std.testing.expectError(
         error.DuplicateFunctionId,
         program.add_function_with_id(.{
@@ -1864,7 +1864,7 @@ test "Program.restore discards appended functions and reservations" {
     var third = try FunctionBuilder.init(&program, "third");
     defer third.deinit();
     const third_id = try program.add_function(try third.finish(.{ .returns = &.{} }));
-    try std.testing.expectEqual(@as(FunctionId, @enumFromInt(2)), third_id);
+    try std.testing.expectEqual(@as(FunctionId, @fromBackingInt(@intCast(2))), third_id);
     try std.testing.expect(program.get_function_by_id(second_id) == null);
 }
 

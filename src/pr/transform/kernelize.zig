@@ -492,8 +492,8 @@ fn decision_descending(
     const left = lhs.candidate;
     const right = rhs.candidate;
     if (left.boundary.source_function != right.boundary.source_function)
-        return @intFromEnum(left.boundary.source_function) >
-            @intFromEnum(right.boundary.source_function);
+        return @backingInt(left.boundary.source_function) >
+            @backingInt(right.boundary.source_function);
     return lhs.range.start > rhs.range.start;
 }
 
@@ -564,7 +564,7 @@ fn dump_kernel_entries(out: *std.Io.Writer, entries: []const KernelEntry) !void 
     };
     try out.print("kernels: {d} provider, {d} unreplaced\n", .{ provider, unreplaced });
     try out.print("  {s:<50} {s:<10} {s:<30} {s:<50} {s}\n", .{ "function", "provider", "ops", "shapes", "outcome" });
-    try out.writeAll("  " ++ ("-" ** 150) ++ "\n");
+    try out.writeAll("  " ++ (&@as([150]u8, @splat('-'))) ++ "\n");
     for (entries) |e| {
         try out.print("  {s:<50} {s:<10} {s:<30} {s:<50} {s}\n", .{
             e.name, e.provider, e.ops, e.shape, @tagName(e.outcome),

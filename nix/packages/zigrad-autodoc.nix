@@ -30,7 +30,7 @@ in
       runHook preInstall
       TERM=dumb zig build docs \
         -j"$NIX_BUILD_CORES" \
-        -Doptimize=ReleaseFast \
+        -Doptimize=fast \
         -Dtarget=native-native-gnu \
         --system ${zigDeps} \
         --prefix "$out"

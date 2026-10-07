@@ -64,27 +64,27 @@
     };
 
     zigradTests = zigrad.override {
-      optimize = "ReleaseSafe";
+      optimize = "safe";
       runTests = true;
     };
 
     zigradXlaCpuTests = zigradXlaCpu.override {
-      optimize = "ReleaseSafe";
+      optimize = "safe";
       runTests = true;
     };
 
     zigradIreeCpuTests = zigradIreeCpu.override {
-      optimize = "ReleaseSafe";
+      optimize = "safe";
       runTests = true;
     };
 
     zigradTvmCpuTests = zigradTvmCpu.override {
-      optimize = "ReleaseSafe";
+      optimize = "safe";
       runTests = true;
     };
 
     zigradDevCudaTests = zigradDevCuda.override {
-      optimize = "ReleaseSafe";
+      optimize = "safe";
       runTests = true;
     };
 

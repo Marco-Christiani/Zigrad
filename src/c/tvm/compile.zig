@@ -399,8 +399,8 @@ test "default_tir_pipeline matches pinned source contract" {
 
 fn validate_pipeline_contract(contract: anytype) !void {
     if (default_tir_pipeline.len != contract.passes.len) return error.PipelineMismatch;
-    inline for (std.meta.fields(@TypeOf(contract.defaults))) |field| {
-        if (@field(contract.defaults, field.name)) return error.PipelineMismatch;
+    inline for (@field(@typeInfo(@TypeOf(contract.defaults)), @tagName(@typeInfo(@TypeOf(contract.defaults)))).field_names) |field_name| {
+        if (@field(contract.defaults, field_name)) return error.PipelineMismatch;
     }
     for (default_tir_pipeline, contract.passes) |pass, expected| {
         if (!std.mem.eql(u8, pass.name(), expected.name)) return error.PipelineMismatch;

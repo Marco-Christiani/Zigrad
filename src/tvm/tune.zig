@@ -395,7 +395,7 @@ fn run_candidate(state: *TuneState, input_value: Value) !OwnedValue {
     const input = try ms.RunnerInput.from_value(input_value);
     const path = try input.dupe_artifact_path(allocator);
     defer allocator.free(path);
-    const path_z = try allocator.dupeZ(u8, path);
+    const path_z = try allocator.dupeSentinel(u8, path, 0);
     defer allocator.free(path_z);
 
     var loaded = try RuntimeModule.load_from_file(allocator, path_z);

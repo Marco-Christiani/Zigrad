@@ -218,7 +218,7 @@ pub fn lower_call(ctx: LowerContext, op: *const pr.Op) LowerError!void {
         result_types[i] = ctx.tensor_to_mlir_type(out_tensor);
     }
 
-    const callee_z = try ctx.arena.dupeZ(u8, callee);
+    const callee_z = try ctx.arena.dupeSentinel(u8, callee, 0);
 
     const mlir_op = mlir.Operation.make(ctx.mlir_ctx, "func.call", .{
         .results = result_types,
@@ -289,7 +289,7 @@ fn choose_symbol_name(
 
     var suffix: usize = 0;
     while (true) : (suffix += 1) {
-        const candidate = try std.fmt.allocPrint(arena, "main_non_entry_{d}", .{suffix});
+        const candidate = try arena.print("main_non_entry_{d}", .{suffix});
         if (!is_symbol_name_used(program, entry, candidate)) {
             if (!@import("builtin").is_test) log.warn("renaming non-entry function 'main' to '{s}' to avoid entry collision", .{candidate});
             return candidate;

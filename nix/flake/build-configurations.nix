@@ -472,7 +472,7 @@
         if externalInputs.runtimePaths == []
         then null
         else externalInputs.runtime;
-      optimize = "ReleaseFast";
+      optimize = "fast";
       passthru = {
         inherit
           externalInputs

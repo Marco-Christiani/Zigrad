@@ -384,27 +384,27 @@ fn selected_output_leaf(comptime OutputsType: type, comptime selector: OutputSel
 
 fn SelectedGradsType(comptime ArgsType: type, comptime argnums: []const usize) type {
     const info = @typeInfo(ArgsType);
-    if (info != .@"struct" or !info.@"struct".is_tuple or info.@"struct".fields.len == 0) {
+    if (info != .@"struct" or !info.@"struct".is_tuple or info.@"struct".field_names.len == 0) {
         @compileError("args must be a tuple with at least one element");
     }
     if (argnums.len == 0) @compileError("wrt_argnums must not be empty");
     inline for (argnums) |argnum| {
-        if (argnum >= info.@"struct".fields.len) @compileError("wrt_argnums contains an out-of-range argument");
+        if (argnum >= info.@"struct".field_names.len) @compileError("wrt_argnums contains an out-of-range argument");
     }
-    if (argnums.len == 1) return info.@"struct".fields[argnums[0]].type;
+    if (argnums.len == 1) return info.@"struct".field_types[argnums[0]];
 
     comptime var types: [argnums.len]type = undefined;
     inline for (argnums, 0..) |argnum, index| {
-        types[index] = info.@"struct".fields[argnum].type;
+        types[index] = info.@"struct".field_types[argnum];
     }
-    return std.meta.Tuple(&types);
+    return @Tuple(&types);
 }
 
 fn argument_leaf_offset(comptime ArgsType: type, comptime argument: usize) usize {
-    const fields = @typeInfo(ArgsType).@"struct".fields;
+    const fields = @typeInfo(ArgsType).@"struct";
     comptime var offset: usize = 0;
-    inline for (fields[0..argument]) |field| {
-        offset += Tree(Tensor).leaf_count(field.type);
+    inline for (fields.field_types[0..argument]) |field_type| {
+        offset += Tree(Tensor).leaf_count(field_type);
     }
     return offset;
 }
@@ -413,12 +413,12 @@ fn selected_leaf_indices(
     comptime ArgsType: type,
     comptime argnums: []const usize,
 ) [Tree(Tensor).leaf_count(SelectedGradsType(ArgsType, argnums))]usize {
-    const fields = @typeInfo(ArgsType).@"struct".fields;
+    const fields = @typeInfo(ArgsType).@"struct";
     var indices: [Tree(Tensor).leaf_count(SelectedGradsType(ArgsType, argnums))]usize = undefined;
     var cursor: usize = 0;
     inline for (argnums) |argnum| {
         const offset = comptime argument_leaf_offset(ArgsType, argnum);
-        const count = comptime Tree(Tensor).leaf_count(fields[argnum].type);
+        const count = comptime Tree(Tensor).leaf_count(fields.field_types[argnum]);
         for (0..count) |index| {
             indices[cursor] = offset + index;
             cursor += 1;
@@ -433,8 +433,8 @@ fn extract_builder(val: anytype) ?*pr.FunctionBuilder {
     if (T == Tensor) return val.backing.traced.builder;
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
-                if (extract_builder(@field(val, field.name))) |b| return b;
+            inline for (info.field_names) |field_name| {
+                if (extract_builder(@field(val, field_name))) |b| return b;
             }
         },
         .array => |info| {
@@ -508,12 +508,45 @@ test "value_and_grad restores registered functions after failure" {
     try std.testing.expectEqual(@as(usize, 0), program.checkpoint_appends().reservation_count);
 }
 
+test "value_and_grad accepts array-valued Tensor arguments" {
+    const F = struct {
+        fn loss(inputs: [1]Tensor) !Tensor {
+            return try inputs[0].mul(inputs[0]);
+        }
+
+        fn apply(input: Tensor) !struct { value: Tensor, grads: [1]Tensor } {
+            var result = try value_and_grad(loss, .{[_]Tensor{input}}, .{});
+            defer result.deinit();
+            return .{
+                .value = result.outputs,
+                .grads = try result.grads.extract([1]Tensor),
+            };
+        }
+    };
+
+    var traced = try trace(
+        F.apply,
+        std.testing.allocator,
+        .{Tensor.abstract(.f32, &.{})},
+        .{ .name = "array_grad_test" },
+    );
+    defer traced.deinit();
+
+    try pr.validate_program(&traced.program);
+    const function = traced.program.get_function_by_id(try traced.program.resolve_entry()).?;
+    try std.testing.expectEqual(@as(usize, 1), function.params.len);
+    try std.testing.expectEqual(@as(usize, 2), function.returns.len);
+    for (function.returns) |value| {
+        try std.testing.expectEqualSlices(i64, &.{}, value.as_tensor().shape.dims);
+    }
+}
+
 test make_grad {
     const grad_fn = comptime make_grad(test_loss, .{});
 
     // Verify return type is the params type (TestParams).
     const Callable = @TypeOf(grad_fn);
-    try std.testing.expectEqual(@as(usize, 2), @typeInfo(Callable.ArgsType).@"struct".fields.len);
+    try std.testing.expectEqual(@as(usize, 2), @typeInfo(Callable.ArgsType).@"struct".field_names.len);
     try std.testing.expect(Callable.ResultType == TestParams);
 
     // Trace the generated function into a complete PR program.
@@ -539,11 +572,11 @@ test make_grad {
 test "make_grad selects differentiated arguments in order" {
     const grad_fn = comptime make_grad(test_loss, .{ .wrt_argnums = &.{ 1, 0, 1 } });
     const return_type = @TypeOf(grad_fn).ResultType;
-    const return_fields = @typeInfo(return_type).@"struct".fields;
-    try std.testing.expectEqual(@as(usize, 3), return_fields.len);
-    try std.testing.expect(return_fields[0].type == TestBatch);
-    try std.testing.expect(return_fields[1].type == TestParams);
-    try std.testing.expect(return_fields[2].type == TestBatch);
+    const return_fields = @typeInfo(return_type).@"struct";
+    try std.testing.expectEqual(@as(usize, 3), return_fields.field_names.len);
+    try std.testing.expect(return_fields.field_types[0] == TestBatch);
+    try std.testing.expect(return_fields.field_types[1] == TestParams);
+    try std.testing.expect(return_fields.field_types[2] == TestBatch);
 
     const specs = .{
         TestParams{

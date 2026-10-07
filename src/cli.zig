@@ -481,8 +481,8 @@ fn validate_option_struct(comptime T: type, comptime command: *const schema.Comm
         if (command == &schema.root and std.mem.eql(u8, option.long_name, "help"))
             continue;
         comptime var found = false;
-        inline for (std.meta.fields(T)) |field| {
-            if (schema_name_matches_field(option.long_name, field.name))
+        inline for (@field(@typeInfo(T), @tagName(@typeInfo(T))).field_names) |field_name| {
+            if (schema_name_matches_field(option.long_name, field_name))
                 found = true;
         }
         if (!found)
@@ -490,21 +490,21 @@ fn validate_option_struct(comptime T: type, comptime command: *const schema.Comm
                 " has no matching field in " ++ @typeName(T));
     }
 
-    inline for (std.meta.fields(T)) |field| {
-        if (field.type == []const []const u8 and
-            std.mem.eql(u8, field.name, "compiler_arguments"))
+    inline for (@field(@typeInfo(T), @tagName(@typeInfo(T))).field_names, @field(@typeInfo(T), @tagName(@typeInfo(T))).field_types) |field_name, field_type| {
+        if (field_type == []const []const u8 and
+            std.mem.eql(u8, field_name, "compiler_arguments"))
             continue;
         comptime var found = false;
         inline for (command.options) |option| {
-            if (schema_name_matches_field(option.long_name, field.name))
+            if (schema_name_matches_field(option.long_name, field_name))
                 found = true;
         }
         inline for (command.positionals) |positional| {
-            if (schema_name_matches_field(positional.name, field.name))
+            if (schema_name_matches_field(positional.name, field_name))
                 found = true;
         }
         if (!found)
-            @compileError("CLI field " ++ field.name ++ " in " ++ @typeName(T) ++
+            @compileError("CLI field " ++ field_name ++ " in " ++ @typeName(T) ++
                 " has no matching schema entry");
     }
 }
@@ -805,8 +805,8 @@ test "parse_tokens rejects values on negated booleans" {
 }
 
 test "schema resolves every command id" {
-    inline for (std.meta.fields(schema.CommandId)) |field| {
-        const id: schema.CommandId = @enumFromInt(field.value);
+    inline for (@field(@typeInfo(schema.CommandId), @tagName(@typeInfo(schema.CommandId))).field_values) |field_value| {
+        const id: schema.CommandId = @fromBackingInt(@intCast(field_value));
         try std.testing.expect(schema.find_by_id(id) != null);
     }
 }

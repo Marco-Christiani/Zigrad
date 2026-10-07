@@ -308,7 +308,7 @@ pub const TagMetric = struct {
 /// Defines XLA compilation metrics.
 pub const CompilationLogEntry = struct {
     timestamp: ?google_protobuf.Timestamp = null,
-    stage: CompilationLogEntry.CompilationStage = @enumFromInt(0),
+    stage: CompilationLogEntry.CompilationStage = @fromBackingInt(@intCast(0)),
     duration: ?google_protobuf.Duration = null,
     task_index: i32 = 0,
     pass_metrics: std.ArrayListUnmanaged(PassMetrics) = .empty,
@@ -891,8 +891,8 @@ pub const LayoutProto = struct {
     tail_padding_alignment_in_elements: i64 = 0,
     element_size_in_bits: i64 = 0,
     memory_space: i64 = 0,
-    index_primitive_type: PrimitiveType = @enumFromInt(0),
-    pointer_primitive_type: PrimitiveType = @enumFromInt(0),
+    index_primitive_type: PrimitiveType = @fromBackingInt(@intCast(0)),
+    pointer_primitive_type: PrimitiveType = @fromBackingInt(@intCast(0)),
     /// Stubbed: recursive type (ShapeProto <-> LayoutProto). Raw protobuf bytes.
     physical_shape_raw: []const u8 = &.{},
     dynamic_shape_metadata_prefix_bytes: i64 = 0,
@@ -985,7 +985,7 @@ pub const LayoutProto = struct {
 /// 
 /// LINT.IfChange
 pub const ShapeProto = struct {
-    element_type: PrimitiveType = @enumFromInt(0),
+    element_type: PrimitiveType = @fromBackingInt(@intCast(0)),
     dimensions: std.ArrayListUnmanaged(i64) = .empty,
     is_dynamic_dimension: std.ArrayListUnmanaged(bool) = .empty,
     /// Stubbed: recursive type (ShapeProto contains ShapeProto). Raw protobuf bytes.
@@ -1244,9 +1244,9 @@ pub const OpMetadata = struct {
 pub const ProfileInfo = struct {
     profile_type: std.ArrayListUnmanaged(ProfileType) = .empty,
     relative_speedup: f64 = 0,
-    profile_source: ProfileSource = @enumFromInt(0),
-    compilation_event: CompilationEvent = @enumFromInt(0),
-    profile_generation_strategy: ProfileGenerationStrategy = @enumFromInt(0),
+    profile_source: ProfileSource = @fromBackingInt(@intCast(0)),
+    compilation_event: CompilationEvent = @fromBackingInt(@intCast(0)),
+    profile_generation_strategy: ProfileGenerationStrategy = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .profile_type = fd(1, .{ .repeated = .@"enum"}),
@@ -1674,7 +1674,7 @@ pub const DeviceHandle = struct {
 /// Send instructions will be blocked until the data is transferred.
 pub const ChannelHandle = struct {
     handle: i64 = 0,
-    type: ChannelHandle.ChannelType = @enumFromInt(0),
+    type: ChannelHandle.ChannelType = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .handle = fd(1, .{ .scalar = .int64 }),
@@ -2575,7 +2575,7 @@ pub const TriangularSolveOptions = struct {
     left_side: bool = false,
     lower: bool = false,
     unit_diagonal: bool = false,
-    transpose_a: TriangularSolveOptions.Transpose = @enumFromInt(0),
+    transpose_a: TriangularSolveOptions.Transpose = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .left_side = fd(1, .{ .scalar = .bool }),
@@ -3534,7 +3534,7 @@ pub const DimensionSharding = struct {
 
 /// LINT.IfChange
 pub const OpSharding = struct {
-    type: OpSharding.Type = @enumFromInt(0),
+    type: OpSharding.Type = @fromBackingInt(@intCast(0)),
     tile_shape: ?ShapeProto = null,
     tile_assignment_dimensions: std.ArrayListUnmanaged(i64) = .empty,
     tile_assignment_devices: std.ArrayListUnmanaged(i64) = .empty,
@@ -3546,7 +3546,7 @@ pub const OpSharding = struct {
     iota_transpose_perm: std.ArrayListUnmanaged(i32) = .empty,
     is_shard_group: bool = false,
     shard_group_id: i64 = 0,
-    shard_group_type: OpSharding.ShardGroupType = @enumFromInt(0),
+    shard_group_type: OpSharding.ShardGroupType = @fromBackingInt(@intCast(0)),
     named_sharding: ?NamedShardingProto = null,
 
     pub const _desc_table = .{
@@ -4172,7 +4172,7 @@ pub const Tolerance = struct {
 /// meaning.
 pub const PrecisionConfig = struct {
     operand_precision: std.ArrayListUnmanaged(PrecisionConfig.Precision) = .empty,
-    algorithm: PrecisionConfig.Algorithm = @enumFromInt(0),
+    algorithm: PrecisionConfig.Algorithm = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .operand_precision = fd(1, .{ .repeated = .@"enum"}),
@@ -5312,7 +5312,7 @@ pub const HloInstructionProto = struct {
     dynamic_slice_sizes: std.ArrayListUnmanaged(i64) = .empty,
     padding_config: ?PaddingConfig = null,
     outfeed_config: []const u8 = &.{},
-    distribution: RandomDistribution = @enumFromInt(0),
+    distribution: RandomDistribution = @fromBackingInt(@intCast(0)),
     epsilon: f32 = 0,
     feature_index: i64 = 0,
     channel_id: i64 = 0,
@@ -5321,7 +5321,7 @@ pub const HloInstructionProto = struct {
     outfeed_shape: ?ShapeProto = null,
     dot_dimension_numbers: ?DotDimensionNumbers = null,
     ragged_dot_dimension_numbers: ?RaggedDotDimensionNumbers = null,
-    fft_type: FftType = @enumFromInt(0),
+    fft_type: FftType = @fromBackingInt(@intCast(0)),
     fft_length: std.ArrayListUnmanaged(i64) = .empty,
     comparison_direction: []const u8 = &.{},
     gather_dimension_numbers: ?GatherDimensionNumbers = null,
@@ -5349,17 +5349,17 @@ pub const HloInstructionProto = struct {
     parameter_replication: ?ParameterReplication = null,
     custom_call_has_side_effect: bool = false,
     output_operand_aliasing: std.ArrayListUnmanaged(OutputOperandAliasing) = .empty,
-    custom_call_schedule: CustomCallSchedule = @enumFromInt(0),
+    custom_call_schedule: CustomCallSchedule = @fromBackingInt(@intCast(0)),
     delta: i64 = 0,
     indices_are_sorted: bool = false,
     frontend_attributes: ?FrontendAttributes = null,
     unique_indices: bool = false,
-    rng_algorithm: RandomAlgorithm = @enumFromInt(0),
+    rng_algorithm: RandomAlgorithm = @fromBackingInt(@intCast(0)),
     comparison_type: []const u8 = &.{},
     is_cross_program_prefetch: bool = false,
     cross_program_prefetch_index: i32 = 0,
-    padding_type: PaddingType = @enumFromInt(0),
-    custom_call_api_version: CustomCallApiVersion = @enumFromInt(0),
+    padding_type: PaddingType = @fromBackingInt(@intCast(0)),
+    custom_call_api_version: CustomCallApiVersion = @fromBackingInt(@intCast(0)),
     async_execution_thread: []const u8 = &.{},
     k: i64 = 0,
     largest: bool = false,
@@ -5904,7 +5904,7 @@ pub const AliasEntryProto = struct {
     output_shape_index: std.ArrayListUnmanaged(i64) = .empty,
     parameter_number: i64 = 0,
     parameter_shape_index: std.ArrayListUnmanaged(i64) = .empty,
-    kind: Kind = @enumFromInt(0),
+    kind: Kind = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .output_shape_index = fd(1, .{ .packed_repeated = .{ .scalar = .int64 }}),
@@ -6542,12 +6542,12 @@ pub const ProfileType = enum(i32) {
 
 /// Information about the optimization profile that this module contains.
 pub const ProfileInfo = struct {
-    profile_type: HloModuleProto.ProfileType = @enumFromInt(0),
+    profile_type: HloModuleProto.ProfileType = @fromBackingInt(@intCast(0)),
     relative_speedup: f64 = 0,
-    profile_source: ProfileSource = @enumFromInt(0),
-    compilation_event: CompilationEvent = @enumFromInt(0),
+    profile_source: ProfileSource = @fromBackingInt(@intCast(0)),
+    compilation_event: CompilationEvent = @fromBackingInt(@intCast(0)),
     fingerprint: []const u8 = &.{},
-    profile_generation_strategy: ProfileGenerationStrategy = @enumFromInt(0),
+    profile_generation_strategy: ProfileGenerationStrategy = @fromBackingInt(@intCast(0)),
     original_changelist: i64 = 0,
     changelist: i64 = 0,
 
@@ -6865,7 +6865,7 @@ pub const Assigned = struct {
     logical_buffer_id: i64 = 0,
     offset: i64 = 0,
     size: i64 = 0,
-    element_type: PrimitiveType = @enumFromInt(0),
+    element_type: PrimitiveType = @fromBackingInt(@intCast(0)),
 
     pub const _desc_table = .{
         .logical_buffer_id = fd(1, .{ .scalar = .int64 }),
@@ -7009,7 +7009,7 @@ pub const HeapSimulatorTrace = struct {
 /// The trace includes a list of events, where each event describes one action
 /// performed by the heap simulator.
 pub const Event = struct {
-    kind: HeapSimulatorTrace.Event.Kind = @enumFromInt(0),
+    kind: HeapSimulatorTrace.Event.Kind = @fromBackingInt(@intCast(0)),
     buffer_id: i64 = 0,
     computation_name: []const u8 = &.{},
     instruction_name: []const u8 = &.{},
@@ -9314,8 +9314,8 @@ pub const ExecutionOptions = struct {
     auto_spmd_partitioning_mesh_ids: std.ArrayListUnmanaged(i64) = .empty,
     exec_time_optimization_effort: f32 = 0,
     memory_fitting_effort: f32 = 0,
-    optimization_level: ExecutionOptions.EffortLevel = @enumFromInt(0),
-    memory_fitting_level: ExecutionOptions.EffortLevel = @enumFromInt(0),
+    optimization_level: ExecutionOptions.EffortLevel = @fromBackingInt(@intCast(0)),
+    memory_fitting_level: ExecutionOptions.EffortLevel = @fromBackingInt(@intCast(0)),
     deduplicate_hlo: bool = false,
     allow_spmd_sharding_propagation_to_parameters: std.ArrayListUnmanaged(bool) = .empty,
     allow_spmd_sharding_propagation_to_output: std.ArrayListUnmanaged(bool) = .empty,
@@ -9442,8 +9442,8 @@ pub const HloModuleConfigProto = struct {
     auto_spmd_partitioning_mesh_ids: std.ArrayListUnmanaged(i64) = .empty,
     exec_time_optimization_effort: f32 = 0,
     memory_fitting_effort: f32 = 0,
-    optimization_level: ExecutionOptions.EffortLevel = @enumFromInt(0),
-    memory_fitting_level: ExecutionOptions.EffortLevel = @enumFromInt(0),
+    optimization_level: ExecutionOptions.EffortLevel = @fromBackingInt(@intCast(0)),
+    memory_fitting_level: ExecutionOptions.EffortLevel = @fromBackingInt(@intCast(0)),
     deduplicate_hlo: bool = false,
     intra_op_parallelism_threads: i64 = 0,
     device_type: []const u8 = &.{},
@@ -9454,7 +9454,7 @@ pub const HloModuleConfigProto = struct {
     shardable_value_update_pairs: std.ArrayListUnmanaged(ShardableValueUpdatePairProto) = .empty,
     alias_passthrough_params: bool = false,
     content_aware_computation_sorting: bool = false,
-    fusion_config_collection: HloModuleConfigProto.FusionConfigCollection = @enumFromInt(0),
+    fusion_config_collection: HloModuleConfigProto.FusionConfigCollection = @fromBackingInt(@intCast(0)),
     fusion_config: std.ArrayListUnmanaged(HloModuleConfigProto.BoolList) = .empty,
     dot_config: std.ArrayListUnmanaged(HloModuleConfigProto.DotConfigEntry) = .empty,
     layout_config: std.ArrayListUnmanaged(HloModuleConfigProto.Int64ListList) = .empty,
@@ -9464,7 +9464,7 @@ pub const HloModuleConfigProto = struct {
     allow_spmd_sharding_propagation_to_parameters: std.ArrayListUnmanaged(bool) = .empty,
     allow_spmd_sharding_propagation_to_output: std.ArrayListUnmanaged(bool) = .empty,
     analysis_allowance_map: std.ArrayListUnmanaged(HloModuleConfigProto.AnalysisAllowanceMapEntry) = .empty,
-    matrix_unit_operand_precision: PrecisionConfig.Precision = @enumFromInt(0),
+    matrix_unit_operand_precision: PrecisionConfig.Precision = @fromBackingInt(@intCast(0)),
     fdo_profile: []const u8 = &.{},
     device_memory_size: i64 = 0,
     use_shardy_partitioner: bool = false,

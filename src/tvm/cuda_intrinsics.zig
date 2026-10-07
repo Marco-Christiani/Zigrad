@@ -29,7 +29,7 @@ pub fn ensure_registered(
         .limited(32 * 1024 * 1024),
     );
     defer allocator.free(bytes);
-    const json = try allocator.dupeZ(u8, bytes);
+    const json = try allocator.dupeSentinel(u8, bytes, 0);
     defer allocator.free(json);
 
     const intrinsic_count = tir.register_tensor_intrin_bundle(allocator, json) catch |err| switch (err) {

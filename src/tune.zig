@@ -500,7 +500,7 @@ fn paired_sign_test(samples: []const Sample) f64 {
 
 fn viable_less_than(_: void, lhs: ViableChoice, rhs: ViableChoice) bool {
     if (lhs.source_function != rhs.source_function)
-        return @intFromEnum(lhs.source_function) < @intFromEnum(rhs.source_function);
+        return @backingInt(lhs.source_function) < @backingInt(rhs.source_function);
     if (lhs.end != rhs.end) return lhs.end < rhs.end;
     if (lhs.start != rhs.start) return lhs.start < rhs.start;
     return lhs.candidate_index < rhs.candidate_index;
@@ -906,7 +906,7 @@ test "collect rejects a missing requested provider" {
 }
 
 test "local measurement summary retains paired-test semantics" {
-    var samples = [_]Sample{.{ .unreplaced_ns = 100, .selected_ns = 90 }} ** 10;
+    var samples = @as([10]Sample, @splat(.{ .unreplaced_ns = 100, .selected_ns = 90 }));
     const evidence = try summarize_measurement(std.testing.allocator, &samples);
     try std.testing.expectEqual(@as(u64, 100), evidence.unreplaced_ns);
     try std.testing.expectEqual(@as(u64, 90), evidence.selected_ns);
@@ -1003,9 +1003,9 @@ test "local resolver maximizes nonoverlapping estimated savings" {
         .{.{ .provider_name = "provider", .artifact = .{ .data = @constCast("left") } }},
         .{.{ .provider_name = "provider", .artifact = .{ .data = @constCast("right") } }},
     };
-    var wide_samples = [_]Sample{.{ .unreplaced_ns = 100, .selected_ns = 60 }} ** 15;
-    var left_samples = [_]Sample{.{ .unreplaced_ns = 100, .selected_ns = 70 }} ** 15;
-    var right_samples = [_]Sample{.{ .unreplaced_ns = 100, .selected_ns = 70 }} ** 15;
+    var wide_samples = @as([15]Sample, @splat(.{ .unreplaced_ns = 100, .selected_ns = 60 }));
+    var left_samples = @as([15]Sample, @splat(.{ .unreplaced_ns = 100, .selected_ns = 70 }));
+    var right_samples = @as([15]Sample, @splat(.{ .unreplaced_ns = 100, .selected_ns = 70 }));
     var measurements = [_][1]Measurement{
         .{.{ .measured = &wide_samples }},
         .{.{ .measured = &left_samples }},

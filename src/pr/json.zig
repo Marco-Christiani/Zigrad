@@ -22,7 +22,7 @@ fn emit_function(func: pr.Function, function_id: ?pr.FunctionId, writer: *Writer
     try writer.writeAll("{");
 
     if (function_id) |id| {
-        try writer.print("\"id\":{d},", .{@intFromEnum(id)});
+        try writer.print("\"id\":{d},", .{@backingInt(id)});
     }
     try writer.writeAll("\"name\":");
     try write_json_string(writer, func.name);
@@ -379,7 +379,7 @@ fn emit_param_attrs(writer: *Writer, op: *const pr.Op) !void {
         },
         .call => |cp| {
             try open_attrs(writer, &has_attr);
-            try writer.print("\"callee\":{d}", .{@intFromEnum(cp.callee)});
+            try writer.print("\"callee\":{d}", .{@backingInt(cp.callee)});
         },
         .custom_call => |cc| {
             try open_attrs(writer, &has_attr);

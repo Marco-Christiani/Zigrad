@@ -80,17 +80,9 @@ pub fn compile(
     options: CompileOptions,
 ) ![]u8 {
     const config = options.config;
-    const backend_argument = try std.fmt.allocPrint(
-        allocator,
-        "--iree-hal-target-backends={s}",
-        .{config.target_backend},
-    );
+    const backend_argument = try allocator.print("--iree-hal-target-backends={s}", .{config.target_backend});
     defer allocator.free(backend_argument);
-    const input_argument = try std.fmt.allocPrint(
-        allocator,
-        "--iree-input-type={s}",
-        .{config.input_type},
-    );
+    const input_argument = try allocator.print("--iree-input-type={s}", .{config.input_type});
     defer allocator.free(input_argument);
 
     const suffix: []const u8 = switch (options.encoding) {

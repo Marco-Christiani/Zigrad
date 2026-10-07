@@ -121,11 +121,7 @@ pub fn extract_range(
     errdefer program.restore_appends(saved);
 
     const generated_base = if (opts.function_name == null)
-        try std.fmt.allocPrint(
-            scratch,
-            "{s}_candidate_{d}_{d}",
-            .{ source.name, range.start, range.end },
-        )
+        try scratch.print("{s}_candidate_{d}_{d}", .{ source.name, range.start, range.end })
     else
         null;
     defer if (generated_base) |name| scratch.free(name);
@@ -254,7 +250,7 @@ pub fn apply(
     errdefer program.restore_appends(saved);
 
     const generated_base = if (opts.function_name == null)
-        try std.fmt.allocPrint(scratch, "{s}_outlined_{d}", .{ source.name, target.id })
+        try scratch.print("{s}_outlined_{d}", .{ source.name, target.id })
     else
         null;
     defer if (generated_base) |name| scratch.free(name);
@@ -665,14 +661,14 @@ test "apply outlines a nested region and preserves surrounding regions" {
         },
     );
 
-    try testing.expectEqual(@as(pr.FunctionId, @enumFromInt(1)), outlined.function_id);
+    try testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(1))), outlined.function_id);
     try testing.expectEqual(@as(u32, 1), outlined.call_op_id);
     try testing.expectEqual(@as(usize, 2), program.functions().len);
 
     const caller = program.functions()[0];
     try testing.expectEqual(@as(usize, 3), caller.ops.len);
     try testing.expectEqual(pr.Prim.call, caller.ops[1].prim());
-    try testing.expectEqual(@as(pr.FunctionId, @enumFromInt(1)), caller.ops[1].params.call.callee);
+    try testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(1))), caller.ops[1].params.call.callee);
     try testing.expectEqual(@as(usize, 2), caller.ops[1].inputs.len);
     try testing.expectEqual(@as(usize, 1), caller.ops[1].outputs.len);
     try testing.expectEqual(@as(usize, 1), caller.regions.len);

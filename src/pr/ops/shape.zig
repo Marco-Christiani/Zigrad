@@ -667,7 +667,7 @@ fn is_permutation(perm: []const i64, rank: usize) bool {
     if (perm.len != rank) return false;
     if (rank == 0) return true;
     if (rank > max_rank) return false;
-    var seen = [_]bool{false} ** max_rank;
+    var seen = @as([max_rank]bool, @splat(false));
     for (perm) |p| {
         if (p < 0) return false;
         const idx: usize = @intCast(p);
@@ -693,7 +693,7 @@ fn validate_broadcast_in_dim_op(operand: Tensor, out: Tensor, broadcast_dimensio
     if (broadcast_dimensions.len != operand.shape.rank()) return error.BroadcastInDimTypeMismatch;
     if (out.shape.rank() < operand.shape.rank()) return error.BroadcastInDimTypeMismatch;
     if (out.shape.rank() > max_rank) return error.BroadcastInDimTypeMismatch;
-    var seen = [_]bool{false} ** max_rank;
+    var seen = @as([max_rank]bool, @splat(false));
     for (broadcast_dimensions, 0..) |d, i| {
         if (d < 0) return error.BroadcastInDimTypeMismatch;
         const out_dim_index: usize = @intCast(d);
@@ -713,7 +713,7 @@ fn reduce_output_dims(allocator: std.mem.Allocator, in_dims: []const i64, axes: 
     const rank = in_dims.len;
     // TODO(pr): Give shared shape helpers errors independent of individual ops.
     if (rank > max_rank) return error.ReduceTypeMismatch;
-    var reduced_axes = [_]bool{false} ** max_rank;
+    var reduced_axes = @as([max_rank]bool, @splat(false));
     for (axes) |axis| {
         if (axis < 0) return error.ReduceTypeMismatch;
         const idx: usize = @intCast(axis);
@@ -738,7 +738,7 @@ fn reduce_output_dims(allocator: std.mem.Allocator, in_dims: []const i64, axes: 
 fn reduce_output_matches(in_dims: []const i64, out_dims: []const i64, axes: []const i64) bool {
     const rank = in_dims.len;
     if (rank > max_rank) return false;
-    var reduced_axes = [_]bool{false} ** max_rank;
+    var reduced_axes = @as([max_rank]bool, @splat(false));
     for (axes) |axis| {
         if (axis < 0) return false;
         const idx: usize = @intCast(axis);
@@ -763,7 +763,7 @@ fn reduce_output_matches(in_dims: []const i64, out_dims: []const i64, axes: []co
 ///  dims to their positions in the original rank.
 fn reduce_broadcast_dims(allocator: std.mem.Allocator, rank: usize, axes: []const i64) pr.BuildError![]const i64 {
     if (rank > max_rank) return error.ReduceTypeMismatch;
-    var reduced_axes = [_]bool{false} ** max_rank;
+    var reduced_axes = @as([max_rank]bool, @splat(false));
     for (axes) |axis| {
         const idx: usize = @intCast(axis);
         reduced_axes[idx] = true;
@@ -794,8 +794,8 @@ fn broadcast_reduce_axes(
 ) pr.BuildError![]const i64 {
     if (out_tensor.shape.rank() > max_rank) return error.ReduceTypeMismatch;
     // track which output dims are mapped by a broadcast_dimension entry
-    var mapped = [_]bool{false} ** max_rank;
-    var reduced_axes = [_]bool{false} ** max_rank;
+    var mapped = @as([max_rank]bool, @splat(false));
+    var reduced_axes = @as([max_rank]bool, @splat(false));
     for (bd, 0..) |d, i| {
         const out_idx: usize = @intCast(d);
         mapped[out_idx] = true;
@@ -850,7 +850,7 @@ fn compute_gather_output_dims(
         @intCast(indices_dims[index_vector_dim]);
     if (params.start_index_map.len != index_vector_len) return null;
     // collapsed dims must have slice_size==1 (they are removed from the output)
-    var collapsed = [_]bool{false} ** max_rank;
+    var collapsed = @as([max_rank]bool, @splat(false));
     for (params.collapsed_slice_dims) |axis| {
         if (axis < 0) return null;
         const idx: usize = @intCast(axis);

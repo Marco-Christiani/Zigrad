@@ -1,6 +1,5 @@
 {
   inputs = {
-    # zig 0.16 added in bbbf018e74b80af4a4692a4b3fca8e91bb0ed7ee
     nixpkgs.url = "github:NixOS/nixpkgs/bbbf018e74b80af4a4692a4b3fca8e91bb0ed7ee";
 
     flake-parts = {
@@ -29,8 +28,9 @@
     treefmt-nix,
     ...
   }: let
+    zigVersion = "0.17.0";
     zigOverlay = final: prev: {
-      zig = inputs.zig-overlay.packages.${prev.stdenv.hostPlatform.system}."0.16.0";
+      zig = inputs.zig-overlay.packages.${prev.stdenv.hostPlatform.system}.${zigVersion};
       zls = prev.stdenvNoCC.mkDerivation (finalAttrs: {
         pname = "zls";
         version = "0.16.0";
@@ -116,9 +116,9 @@
 
       flake = {
         overlays.default = zigOverlay;
-        lib = import ./nix/lib/consumer.nix {
+        lib = (import ./nix/lib/consumer.nix {
           zigradSrc = ./.;
-        };
+        }) // {inherit zigVersion;};
         templates.mnist = {
           path = ./examples/mnist;
           description = "Zigrad MNIST application with interchangeable CPU backends";

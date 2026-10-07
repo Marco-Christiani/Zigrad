@@ -850,7 +850,7 @@ fn compute_convolution_output_dims(
 }
 
 fn valid_dimension_spec(rank: usize, first: i64, second: i64, spatial: []const i64) bool {
-    var seen = [_]bool{false} ** max_rank;
+    var seen = @as([max_rank]bool, @splat(false));
     for ([_]i64{ first, second }) |dim| {
         if (dim < 0 or dim >= rank or seen[@intCast(dim)]) return false;
         seen[@intCast(dim)] = true;
@@ -889,8 +889,8 @@ fn compute_dot_general_output_dims(
     if (params.lhs_contracting_dims.len != params.rhs_contracting_dims.len) return null;
 
     // Phase 1: Mark and validate batch dims. Paired dims must have matching sizes.
-    var lhs_batch = [_]bool{false} ** max_rank;
-    var rhs_batch = [_]bool{false} ** max_rank;
+    var lhs_batch = @as([max_rank]bool, @splat(false));
+    var rhs_batch = @as([max_rank]bool, @splat(false));
     for (params.lhs_batch_dims, 0..) |d, i| {
         if (d < 0) return null;
         const lhs_idx: usize = @intCast(d);
@@ -905,8 +905,8 @@ fn compute_dot_general_output_dims(
     }
 
     // Phase 2: Mark and validate contracting dims. Must not overlap with batch dims.
-    var lhs_contract = [_]bool{false} ** max_rank;
-    var rhs_contract = [_]bool{false} ** max_rank;
+    var lhs_contract = @as([max_rank]bool, @splat(false));
+    var rhs_contract = @as([max_rank]bool, @splat(false));
     for (params.lhs_contracting_dims, 0..) |d, i| {
         if (d < 0) return null;
         const lhs_idx: usize = @intCast(d);

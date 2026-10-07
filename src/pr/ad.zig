@@ -152,7 +152,7 @@ const LinearizationTraversal = struct {
 
         const func = self.program.get_function_by_id(source) orelse
             return error.CallUnresolvedCallee;
-        const base_name = try std.fmt.allocPrint(self.allocator, "{s}_linearized", .{func.name});
+        const base_name = try self.allocator.print("{s}_linearized", .{func.name});
         defer self.allocator.free(base_name);
         const result = try linearize_impl(self, func, base_name);
         try self.generated.append(self.allocator, .{
@@ -219,10 +219,10 @@ fn linearize_impl(
     const saved = program.checkpoint_appends();
     errdefer program.restore_appends(saved);
 
-    const primal_name_base = try std.fmt.allocPrint(allocator, "{s}_primal", .{name});
+    const primal_name_base = try allocator.print("{s}_primal", .{name});
     defer allocator.free(primal_name_base);
     const primal_name = try program.reserve_unique_function_name(primal_name_base);
-    const linear_name_base = try std.fmt.allocPrint(allocator, "{s}_linear", .{name});
+    const linear_name_base = try allocator.print("{s}_linear", .{name});
     defer allocator.free(linear_name_base);
     const linear_name = try program.reserve_unique_function_name(linear_name_base);
 
@@ -552,7 +552,7 @@ const TransposeTraversal = struct {
 
         const callee = self.program.get_function_by_id(callee_id) orelse
             return error.CallUnresolvedCallee;
-        const base_name = try std.fmt.allocPrint(self.allocator, "{s}_transpose", .{callee.name});
+        const base_name = try self.allocator.print("{s}_transpose", .{callee.name});
         defer self.allocator.free(base_name);
         const transpose_name = try self.program.reserve_unique_function_name(base_name);
         const transpose = try transpose_impl(
@@ -863,7 +863,7 @@ pub fn vjp(
                 return error.NonDifferentiableSelection;
         }
 
-        const transpose_name_base = try std.fmt.allocPrint(allocator, "{s}_transpose", .{name});
+        const transpose_name_base = try allocator.print("{s}_transpose", .{name});
         defer allocator.free(transpose_name_base);
         const transpose_name = try program.reserve_unique_function_name(transpose_name_base);
         const transpose_func = try transpose_linear(

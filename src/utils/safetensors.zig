@@ -60,14 +60,14 @@ fn collect(
     }
 
     switch (@typeInfo(T)) {
-        .@"struct" => |info| inline for (info.fields) |field| {
+        .@"struct" => |info| inline for (info.field_names, info.field_types) |field_name, field_type| {
             const separator = if (prefix.len == 0) "" else ".";
             try collect(
-                field.type,
-                @field(value, field.name),
+                field_type,
+                @field(value, field_name),
                 allocator,
                 tensors,
-                prefix ++ separator ++ field.name,
+                prefix ++ separator ++ field_name,
             );
         },
         .array => |array| inline for (0..array.len) |index| {
@@ -102,8 +102,8 @@ fn stz_dtype(dtype: DType) !stz.Dtype {
 }
 
 test stz_dtype {
-    inline for (std.meta.fields(DType)) |field| {
-        const dtype: DType = @enumFromInt(field.value);
+    inline for (@field(@typeInfo(DType), @tagName(@typeInfo(DType))).field_values) |field_value| {
+        const dtype: DType = @fromBackingInt(@intCast(field_value));
         try std.testing.expectEqualStrings(dtype.name(), @tagName(try stz_dtype(dtype)));
     }
 }
@@ -170,16 +170,16 @@ fn walk(
         .@"struct" => |info| {
             var result: T = undefined;
             var initialized: usize = 0;
-            errdefer inline for (info.fields, 0..) |field, index| {
-                if (index < initialized) deinit_loaded(field.type, &@field(result, field.name));
+            errdefer inline for (info.field_names, info.field_types, 0..) |field_name, field_type, index| {
+                if (index < initialized) deinit_loaded(field_type, &@field(result, field_name));
             };
-            inline for (info.fields) |field| {
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
                 const sep = if (prefix.len == 0) "" else ".";
-                @field(result, field.name) = try walk(
-                    field.type,
+                @field(result, field_name) = try walk(
+                    field_type,
                     st,
                     opts,
-                    prefix ++ sep ++ field.name,
+                    prefix ++ sep ++ field_name,
                 );
                 initialized += 1;
             }
@@ -215,8 +215,8 @@ fn deinit_loaded(comptime T: type, value: *T) void {
     }
     switch (@typeInfo(T)) {
         .optional => |optional| if (value.*) |*child| deinit_loaded(optional.child, child),
-        .@"struct" => |info| inline for (info.fields) |field| {
-            deinit_loaded(field.type, &@field(value.*, field.name));
+        .@"struct" => |info| inline for (info.field_names, info.field_types) |field_name, field_type| {
+            deinit_loaded(field_type, &@field(value.*, field_name));
         },
         .array => |array| inline for (0..array.len) |index| {
             deinit_loaded(array.child, &value.*[index]);

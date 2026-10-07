@@ -26,12 +26,12 @@ const header_size = magic.len + @sizeOf(u32) + @sizeOf(u64);
 const wire_prim_count = 29;
 
 comptime {
-    const prim_fields = std.meta.fields(pr.Prim);
-    const params_fields = @typeInfo(pr.Params).@"union".fields;
-    if (prim_fields.len != wire_prim_count or params_fields.len != wire_prim_count)
+    const prim_fields = @field(@typeInfo(pr.Prim), @tagName(@typeInfo(pr.Prim)));
+    const params_fields = @typeInfo(pr.Params).@"union";
+    if (prim_fields.field_names.len != wire_prim_count or params_fields.field_names.len != wire_prim_count)
         @compileError("Prim changed: update the PR wire version and wire_prim_count");
-    for (prim_fields, params_fields) |prim_field, params_field| {
-        if (!std.mem.eql(u8, prim_field.name, params_field.name))
+    for (prim_fields.field_names, params_fields.field_names) |prim_field_name, params_field_name| {
+        if (!std.mem.eql(u8, prim_field_name, params_field_name))
             @compileError("Prim and Params variants must have matching order and names");
     }
 }
@@ -340,7 +340,7 @@ pub fn write_value(comptime T: type, writer: *Writer, value: T) EmitError!void {
             try writer.writeInt(T, value, .little);
         },
         .float => |info| {
-            const Bits = std.meta.Int(.unsigned, info.bits);
+            const Bits = @Int(.unsigned, info.bits);
             try writer.writeInt(Bits, @bitCast(value), .little);
         },
         .@"enum" => try write_enum(T, writer, value),
@@ -359,17 +359,17 @@ pub fn write_value(comptime T: type, writer: *Writer, value: T) EmitError!void {
             for (value) |item| try write_value(info.child, writer, item);
         },
         .@"struct" => |info| {
-            inline for (info.fields) |field|
-                try write_value(field.type, writer, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, field_type|
+                try write_value(field_type, writer, @field(value, field_name));
         },
         .@"union" => |info| {
             const Tag = info.tag_type orelse
                 @compileError("PR wire requires tagged unions");
             const tag = std.meta.activeTag(value);
             try write_enum(Tag, writer, tag);
-            inline for (info.fields) |field| {
-                if (tag == @field(Tag, field.name))
-                    try write_value(field.type, writer, @field(value, field.name));
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                if (tag == @field(Tag, field_name))
+                    try write_value(field_type, writer, @field(value, field_name));
             }
         },
         else => @compileError("unsupported PR wire type: " ++ @typeName(T)),
@@ -377,18 +377,18 @@ pub fn write_value(comptime T: type, writer: *Writer, value: T) EmitError!void {
 }
 
 fn write_enum(comptime T: type, writer: *Writer, value: T) EmitError!void {
-    try writer.writeInt(u32, @intCast(@intFromEnum(value)), .little);
+    try writer.writeInt(u32, @intCast(@backingInt(value)), .little);
 }
 
 fn read_params(reader: *Reader, arena: Allocator) DecodeError!pr.Params {
     const tag_value = try reader.read_int(u32);
-    inline for (@typeInfo(pr.Params).@"union".fields) |field| {
-        const tag = @field(pr.Prim, field.name);
-        if (tag_value == @intFromEnum(tag)) {
+    inline for (@typeInfo(pr.Params).@"union".field_names, @typeInfo(pr.Params).@"union".field_types) |field_name, field_type| {
+        const tag = @field(pr.Prim, field_name);
+        if (tag_value == @backingInt(tag)) {
             return @unionInit(
                 pr.Params,
-                field.name,
-                try read_value(field.type, reader, arena),
+                field_name,
+                try read_value(field_type, reader, arena),
             );
         }
     }
@@ -410,7 +410,7 @@ pub fn read_value(comptime T: type, reader: *Reader, arena: Allocator) DecodeErr
             break :blk try reader.read_int(T);
         },
         .float => |info| blk: {
-            const Bits = std.meta.Int(.unsigned, info.bits);
+            const Bits = @Int(.unsigned, info.bits);
             break :blk @bitCast(try reader.read_int(Bits));
         },
         .@"enum" => try read_enum(T, reader),
@@ -429,20 +429,20 @@ pub fn read_value(comptime T: type, reader: *Reader, arena: Allocator) DecodeErr
         },
         .@"struct" => |info| blk: {
             var result: T = undefined;
-            inline for (info.fields) |field|
-                @field(result, field.name) = try read_value(field.type, reader, arena);
+            inline for (info.field_names, info.field_types) |field_name, field_type|
+                @field(result, field_name) = try read_value(field_type, reader, arena);
             break :blk result;
         },
         .@"union" => |info| blk: {
             const Tag = info.tag_type orelse
                 @compileError("PR wire requires tagged unions");
             const tag = try read_enum(Tag, reader);
-            inline for (info.fields) |field| {
-                if (tag == @field(Tag, field.name)) {
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                if (tag == @field(Tag, field_name)) {
                     break :blk @unionInit(
                         T,
-                        field.name,
-                        try read_value(field.type, reader, arena),
+                        field_name,
+                        try read_value(field_type, reader, arena),
                     );
                 }
             }
@@ -537,9 +537,9 @@ fn hash_type(hash: *u64, comptime T: type) void {
         .@"enum" => |info| {
             hash_bytes(hash, "enum");
             hash_type(hash, info.tag_type);
-            inline for (info.fields) |field| {
-                hash_bytes(hash, field.name);
-                hash_int(hash, field.value);
+            inline for (info.field_names, info.field_values) |field_name, field_value| {
+                hash_bytes(hash, field_name);
+                hash_int(hash, field_value);
             }
         },
         .optional => |info| {
@@ -554,9 +554,9 @@ fn hash_type(hash: *u64, comptime T: type) void {
         },
         .@"struct" => |info| {
             hash_bytes(hash, "struct");
-            inline for (info.fields) |field| {
-                hash_bytes(hash, field.name);
-                hash_type(hash, field.type);
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                hash_bytes(hash, field_name);
+                hash_type(hash, field_type);
             }
         },
         .@"union" => |info| {
@@ -564,9 +564,9 @@ fn hash_type(hash: *u64, comptime T: type) void {
             const Tag = info.tag_type orelse
                 @compileError("PR wire requires tagged unions");
             hash_type(hash, Tag);
-            inline for (info.fields) |field| {
-                hash_bytes(hash, field.name);
-                hash_type(hash, field.type);
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                hash_bytes(hash, field_name);
+                hash_type(hash, field_type);
             }
         },
         else => @compileError("unsupported PR wire type: " ++ @typeName(T)),
@@ -659,7 +659,7 @@ fn make_test_program(backing_allocator: Allocator) !pr.Program {
         .inputs = call_inputs,
         .outputs = call_outputs,
         .params = .{ .call = .{
-            .callee = @enumFromInt(1),
+            .callee = @fromBackingInt(@intCast(1)),
         } },
     };
     call_inputs[0].attach(custom_outputs[0], call_op, 0);
@@ -718,9 +718,9 @@ fn make_test_program(backing_allocator: Allocator) !pr.Program {
     };
     for (functions, 0..) |func, ordinal| {
         const id = try program.add_function(func);
-        std.debug.assert(@intFromEnum(id) == ordinal);
+        std.debug.assert(@backingInt(id) == ordinal);
     }
-    try program.set_entry(@enumFromInt(0));
+    try program.set_entry(@fromBackingInt(@intCast(0)));
     return program;
 }
 
@@ -738,7 +738,7 @@ test "binary PR round trip is byte stable" {
     var parsed = try parse(std.testing.allocator, first_bytes);
     defer parsed.deinit();
     try pr.validate_program(&parsed);
-    try std.testing.expectEqual(@as(pr.FunctionId, @enumFromInt(0)), try parsed.resolve_entry());
+    try std.testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(0))), try parsed.resolve_entry());
 
     try std.testing.expectEqual(@as(usize, 2), parsed.functions()[0].ops[1].outputs.len);
     const literal = parsed.functions()[0].ops[0].params.literal.f32;
@@ -770,7 +770,7 @@ test "binary PR round trip is byte stable" {
     try std.testing.expectEqualSlices(u32, &.{ 4, 9 }, region.op_ids);
 
     const call_op = parsed.functions()[0].ops[2];
-    try std.testing.expectEqual(@as(pr.FunctionId, @enumFromInt(1)), call_op.params.call.callee);
+    try std.testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(1))), call_op.params.call.callee);
     try std.testing.expectEqual(@as(usize, 1), call_op.outputs.len);
     try std.testing.expect(parsed.functions()[0].returns[0] == call_op.outputs[0]);
     try std.testing.expect(call_op.outputs[0].first_use == null);
@@ -800,7 +800,7 @@ test "binary PR preserves inferred entry selection" {
     var parsed = try parse(std.testing.allocator, bytes);
     defer parsed.deinit();
     try std.testing.expectEqual(@as(?pr.FunctionId, null), parsed.entry);
-    try std.testing.expectEqual(@as(pr.FunctionId, @enumFromInt(0)), try parsed.resolve_entry());
+    try std.testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(0))), try parsed.resolve_entry());
 }
 
 test "binary PR preserves sparse function identities" {
@@ -823,7 +823,7 @@ test "binary PR preserves sparse function identities" {
     defer callee_builder.deinit();
     const callee_input = try callee_builder.param_tensor(.f32, &.{});
     const callee_id = try source.add_function(try callee_builder.finish(.{ .returns = &.{callee_input} }));
-    try std.testing.expectEqual(@as(pr.FunctionId, @enumFromInt(2)), callee_id);
+    try std.testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(2))), callee_id);
 
     var caller_builder = try pr.FunctionBuilder.init(&source, "caller");
     defer caller_builder.deinit();
@@ -840,10 +840,10 @@ test "binary PR preserves sparse function identities" {
     defer parsed.deinit();
     const function_ids = parsed.function_ids();
     try std.testing.expectEqual(@as(usize, 3), function_ids.len);
-    try std.testing.expectEqualSlices(pr.FunctionId, &.{ @enumFromInt(0), @enumFromInt(2), @enumFromInt(3) }, function_ids);
-    try std.testing.expectEqual(@as(?pr.FunctionId, @enumFromInt(3)), parsed.entry);
-    const parsed_caller = parsed.get_function_by_id(@enumFromInt(3)).?;
-    try std.testing.expectEqual(@as(pr.FunctionId, @enumFromInt(2)), parsed_caller.ops[0].params.call.callee);
+    try std.testing.expectEqualSlices(pr.FunctionId, &.{ @fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(2)), @fromBackingInt(@intCast(3)) }, function_ids);
+    try std.testing.expectEqual(@as(?pr.FunctionId, @fromBackingInt(@intCast(3))), parsed.entry);
+    const parsed_caller = parsed.get_function_by_id(@fromBackingInt(@intCast(3))).?;
+    try std.testing.expectEqual(@as(pr.FunctionId, @fromBackingInt(@intCast(2))), parsed_caller.ops[0].params.call.callee);
 }
 
 test "convolution parameters round trip" {

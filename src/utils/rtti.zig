@@ -12,7 +12,7 @@ pub const TypeID = enum(usize) {
     _,
 
     pub fn of(comptime T: type) TypeID {
-        return @enumFromInt(@intFromPtr(&Holder(T).id));
+        return @fromBackingInt(@intCast(@intFromPtr(&Holder(T).id)));
     }
 
     // TODO(abi): Replace image-local IDs with versioned type identities before

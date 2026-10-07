@@ -9,7 +9,7 @@ pub fn leaf_count(comptime Leaf: type, comptime T: type) comptime_int {
     return switch (@typeInfo(T)) {
         .@"struct" => |info| blk: {
             var total: comptime_int = 0;
-            for (info.fields) |field| total += leaf_count(Leaf, field.type);
+            for (info.field_types) |field_type| total += leaf_count(Leaf, field_type);
             break :blk total;
         },
         .array => |info| info.len * leaf_count(Leaf, info.child),
@@ -38,8 +38,8 @@ pub fn flatten(comptime Leaf: type, comptime T: type, value: T, out: []Leaf, idx
     }
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
-                flatten(Leaf, field.type, @field(value, field.name), out, idx);
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                flatten(Leaf, field_type, @field(value, field_name), out, idx);
             }
         },
         .array => |info| {
@@ -104,8 +104,8 @@ pub fn unflatten(comptime Leaf: type, comptime T: type, leaves: []const Leaf, id
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
             var result: RuntimeOf(T) = undefined;
-            inline for (info.fields) |field| {
-                @field(result, field.name) = unflatten(Leaf, field.type, leaves, idx);
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                @field(result, field_name) = unflatten(Leaf, field_type, leaves, idx);
             }
             return result;
         },
@@ -148,8 +148,8 @@ pub fn visit(comptime Leaf: type, comptime T: type, target: *T, comptime f: fn (
     }
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
-                visit(Leaf, field.type, &@field(target, field.name), f);
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
+                visit(Leaf, field_type, &@field(target, field_name), f);
             }
         },
         .array => |info| {
@@ -180,34 +180,18 @@ test visit {
     try std.testing.expectEqual(30, value.y);
 }
 
-/// Strip `is_comptime` from struct fields so runtime values can be stored.
-///
-/// Module-level `const` structs passed into anonymous tuples get
-/// comptime fields. `RuntimeOf` produces a version of the type
-/// where all fields accept runtime values.
-///
-/// TODO(api): Replace this derived type with a focused compile error if Zig
-///  provides no way to suppress comptime-field inference at the call site.
+/// Make struct fields writable at runtime.
+/// Module constants in anonymous tuples can infer comptime fields.
+/// TODO(api): Reject implicit comptime fields when callers can avoid them directly.
 pub fn RuntimeOf(comptime T: type) type {
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            for (info.fields) |field| {
-                if (field.is_comptime) {
-                    if (info.is_tuple) {
-                        var field_types: [info.fields.len]type = undefined;
-                        for (info.fields, 0..) |f, i| field_types[i] = f.type;
-                        return @Tuple(&field_types);
-                    }
-                    var field_names: [info.fields.len][:0]const u8 = undefined;
-                    var field_types: [info.fields.len]type = undefined;
-                    var field_attrs: [info.fields.len]std.builtin.Type.StructField.Attributes = undefined;
-                    for (info.fields, 0..) |f, i| {
-                        field_names[i] = f.name;
-                        field_types[i] = f.type;
-                        field_attrs[i] = .{ .@"align" = f.alignment };
-                    }
-                    return @Struct(info.layout, null, &field_names, &field_types, &field_attrs);
-                }
+            for (info.field_attrs) |attrs| {
+                if (!attrs.@"comptime") continue;
+                if (info.is_tuple) return @Tuple(info.field_types);
+                var field_attrs: [info.field_names.len]std.lang.Type.Struct.FieldAttributes = undefined;
+                for (info.field_attrs, 0..) |field, i| field_attrs[i] = .{ .@"align" = field.@"align" };
+                return @Struct(info.layout, null, info.field_names, info.field_types, &field_attrs);
             }
             return T;
         },
@@ -260,9 +244,9 @@ fn build_paths(
     }
     switch (@typeInfo(T)) {
         .@"struct" => |info| {
-            inline for (info.fields) |field| {
+            inline for (info.field_names, info.field_types) |field_name, field_type| {
                 const sep = if (prefix.len == 0) "" else ".";
-                build_paths(Leaf, field.type, result, idx, prefix ++ sep ++ field.name);
+                build_paths(Leaf, field_type, result, idx, prefix ++ sep ++ field_name);
             }
         },
         .array => |info| {

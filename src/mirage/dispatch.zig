@@ -155,7 +155,7 @@ pub const MirageDispatchState = struct {
         errdefer self.allocator.free(funcs);
 
         for (art.kernels, 0..) |kd, ki| {
-            const name_z = try self.allocator.dupeZ(u8, kd.func_name);
+            const name_z = try self.allocator.dupeSentinel(u8, kd.func_name, 0);
             defer self.allocator.free(name_z);
 
             funcs[ki] = module.function(name_z) catch |err| {
@@ -254,26 +254,18 @@ pub fn compile_to_ptx(
 
     try include_dirs.append(
         tmp,
-        try std.fmt.allocPrint(tmp, "{s}/include", .{config.sdk_root}),
+        try tmp.print("{s}/include", .{config.sdk_root}),
     );
     try include_dirs.append(
         tmp,
-        try std.fmt.allocPrint(
-            tmp,
-            "{s}/include/mirage/transpiler/runtime",
-            .{config.sdk_root},
-        ),
+        try tmp.print("{s}/include/mirage/transpiler/runtime", .{config.sdk_root}),
     );
 
     if (config.mirage_include_dir) |value| {
         try include_dirs.append(tmp, value);
         try include_dirs.append(
             tmp,
-            try std.fmt.allocPrint(
-                tmp,
-                "{s}/mirage/transpiler/runtime",
-                .{value},
-            ),
+            try tmp.print("{s}/mirage/transpiler/runtime", .{value}),
         );
     }
 

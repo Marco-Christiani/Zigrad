@@ -132,7 +132,7 @@ fn emit_op_coverage_report() void {
         @compileLog(row);
     }
 
-    @compileLog('-' ** 30 ++ "totals" ++ '-' ** 30);
+    @compileLog(@as([30]u8, @splat('-')) ++ "totals" ++ @as([30]u8, @splat('-')));
     inline for (op_methods) |m| {
         comptime var hits: usize = 0;
         inline for (comptime std.enums.values(pr.Prim)) |prim| {

@@ -143,7 +143,7 @@ pub const RuntimeModule = struct {
         var result = try ffi.call_global(allocator, "runtime.RPCTimeEvaluator", &.{
             self.as_value(),
             Value.str(name),
-            Value.int(@intFromEnum(device_type)),
+            Value.int(@backingInt(device_type)),
             Value.int(device_ordinal),
             Value.int(options.number),
             Value.int(options.repeats),
@@ -353,7 +353,7 @@ pub const Tensor = struct {
 fn device_value(device_type: dlpack.DeviceType, device_id: i32) Value {
     var v = std.mem.zeroes(c.TVMFFIAny);
     v.type_index = c.kTVMFFIDevice;
-    v.unnamed_1.v_device = .{ .device_type = @intCast(@intFromEnum(device_type)), .device_id = device_id };
+    v.unnamed_1.v_device = .{ .device_type = @intCast(@backingInt(device_type)), .device_id = device_id };
     return .{ .raw = v };
 }
 
@@ -361,7 +361,7 @@ fn dtype_value(dtype: dlpack.DataType) Value {
     var v = std.mem.zeroes(c.TVMFFIAny);
     v.type_index = c.kTVMFFIDataType;
     v.unnamed_1.v_dtype = .{
-        .code = @intCast(@intFromEnum(dtype.code)),
+        .code = @intCast(@backingInt(dtype.code)),
         .bits = dtype.bits,
         .lanes = dtype.lanes,
     };
@@ -383,7 +383,7 @@ pub fn set_stream(
     stream: *anyopaque,
 ) TvmError!void {
     try ffi.call_global_void(allocator, "runtime.TVMSetStream", &.{
-        Value.int(@intFromEnum(device_type)),
+        Value.int(@backingInt(device_type)),
         Value.int(device_ordinal),
         ptr_value(stream),
     });

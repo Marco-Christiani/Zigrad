@@ -19,7 +19,7 @@
   zigDependencySets ? [],
   needsCudaDriverRunpath ? false,
   version ? "dev",
-  optimize ? "ReleaseFast",
+  optimize ? "fast",
   runTests ? false,
 }: let
   zigDeps = callPackage ./zig-dependencies.nix {

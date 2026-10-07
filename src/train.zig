@@ -263,7 +263,7 @@ pub fn donated_input_indices(
         if (info != .@"struct" or !info.@"struct".is_tuple)
             @compileError("donated_input_indices: SpecsTuple must be a tuple type");
 
-        const fields = info.@"struct".fields;
+        const fields = info.@"struct";
 
         // Validate argument positions and count their flattened leaves.
         var count: usize = 0;
@@ -302,7 +302,7 @@ fn is_donated(comptime donated: []const usize, comptime arg_idx: usize) bool {
 
 test donated_input_indices {
     const Params = struct { weight: Tensor, bias: Tensor };
-    const Specs = std.meta.Tuple(&.{ Params, Tensor, [2]Tensor });
+    const Specs = @Tuple(&.{ Params, Tensor, [2]Tensor });
     const donated = comptime donated_input_indices(Specs, &.{ 0, 2 });
     try std.testing.expectEqualSlices(usize, &.{ 0, 1, 3, 4 }, donated);
 }

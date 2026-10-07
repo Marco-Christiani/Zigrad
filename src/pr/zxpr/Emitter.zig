@@ -49,7 +49,7 @@ pub fn emit(self: *Self) !void {
     try self.styler.write_keyword("zxpr");
     try w.writeAll(" ");
     if (self.function_id) |id| {
-        try w.print("@{d} ", .{@intFromEnum(id)});
+        try w.print("@{d} ", .{@backingInt(id)});
     }
     try self.styler.write_identifier(self.func.name);
     if (self.func.annotations.len > 0) {

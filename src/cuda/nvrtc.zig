@@ -52,16 +52,12 @@ pub const Config = struct {
         try append_include(
             allocator,
             options,
-            try std.fmt.allocPrint(
-                allocator,
-                "{s}/include/cuda/std/detail/libcxx/include",
-                .{self.toolkit_root},
-            ),
+            try allocator.print("{s}/include/cuda/std/detail/libcxx/include", .{self.toolkit_root}),
         );
         try append_include(
             allocator,
             options,
-            try std.fmt.allocPrint(allocator, "{s}/include", .{self.toolkit_root}),
+            try allocator.print("{s}/include", .{self.toolkit_root}),
         );
         if (self.glibc_include_dir) |path| {
             try append_include(allocator, options, path);
@@ -75,16 +71,12 @@ pub const Config = struct {
 
         try options.append(
             allocator,
-            try std.fmt.allocPrint(
-                allocator,
-                "--gpu-architecture={s}",
-                .{additions.gpu_arch},
-            ),
+            try allocator.print("--gpu-architecture={s}", .{additions.gpu_arch}),
         );
         if (additions.cpp_standard) |standard| {
             try options.append(
                 allocator,
-                try std.fmt.allocPrint(allocator, "--std={s}", .{standard}),
+                try allocator.print("--std={s}", .{standard}),
             );
         }
         if (additions.default_device) {
@@ -93,7 +85,7 @@ pub const Config = struct {
         for (additions.defines) |name| {
             try options.append(
                 allocator,
-                try std.fmt.allocPrint(allocator, "-D{s}", .{name}),
+                try allocator.print("-D{s}", .{name}),
             );
         }
         try options.appendSlice(allocator, additions.extra);
@@ -171,7 +163,7 @@ fn append_include(
 ) !void {
     try options.append(
         allocator,
-        try std.fmt.allocPrint(allocator, "--include-path={s}", .{path}),
+        try allocator.print("--include-path={s}", .{path}),
     );
 }
 

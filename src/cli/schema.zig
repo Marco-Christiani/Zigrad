@@ -479,9 +479,9 @@ pub fn help_target(args: []const []const u8) ?*const Command {
 }
 
 test "schema command ids are unique" {
-    var seen = std.EnumSet(CommandId).initEmpty();
+    var seen = std.EnumSet(CommandId).empty;
     try expect_unique_ids(&root, &seen);
-    try std.testing.expectEqual(std.meta.fields(CommandId).len, seen.count());
+    try std.testing.expectEqual(@field(@typeInfo(CommandId), @tagName(@typeInfo(CommandId))).field_names.len, seen.count());
 }
 
 fn expect_unique_ids(command: *const Command, seen: *std.EnumSet(CommandId)) !void {
