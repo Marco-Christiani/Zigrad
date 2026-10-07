@@ -38,13 +38,8 @@
         },
         .protobuf = .{
             .lazy = true,
-            // Upstream 5.0.0 (`Arwalk/zig-protobuf` 1f6cb06) is 0.16-clean
-            //  except for one missing `@setEvalBranchQuota` line on the
-            //  generic `deinit`. Marco-Christiani fork branch
-            //  `zig-0.16-eval-quota` is upstream + that single commit.
-            //  Switch to upstream once that one-liner is merged.
-            .url = "git+https://github.com/Marco-Christiani/zig-protobuf#ce3735fa4ee099a6c767ac87301ffdeb5c484a40",
-            .hash = "protobuf-5.0.0-0e82ahSVKACt8CYbD8lZ3nG0HwxsAzx0DMnwUH15DPiT",
+            .url = "git+https://github.com/Marco-Christiani/zig-protobuf#a4c1e492e5d5afe947724ec0ee95f09f1b828881",
+            .hash = "protobuf-5.0.0-0e82ak1NKACDoOz0E7W7RJ2cPQLQP9pIEHS6RkDhNGAz",
         },
     },
     .paths = .{

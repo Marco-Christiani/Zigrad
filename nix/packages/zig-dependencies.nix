@@ -22,11 +22,11 @@
   };
 
   protobuf = {
-    name = "protobuf-5.0.0-0e82ahSVKACt8CYbD8lZ3nG0HwxsAzx0DMnwUH15DPiT";
+    name = "protobuf-5.0.0-0e82ak1NKACDoOz0E7W7RJ2cPQLQP9pIEHS6RkDhNGAz";
     path = fetchgit {
       url = "https://github.com/Marco-Christiani/zig-protobuf";
-      rev = "ce3735fa4ee099a6c767ac87301ffdeb5c484a40";
-      hash = "sha256-5AWxFzJuQdulj/AQbL9G9MCql51q8RDIw7duqqyunQE=";
+      rev = "a4c1e492e5d5afe947724ec0ee95f09f1b828881";
+      hash = "sha256-nooYVDBBXz6hG+i1qEtQu3ajJirGtpI099tRRp6uguU=";
     };
   };
 
