@@ -32,7 +32,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .safetensors_zg = .{ .path = "vendor/safetensors-zg" },
+        .safetensors_zg = .{
+            .url = "git+https://github.com/Marco-Christiani/safetensors-zg#2537a1ae8c8a5e3f347c2605eae905f26db24f5e",
+            .hash = "safetensors_zg-0.0.1-dRXUiNjwAACWR1_WcxxaEM_wzkIqASiNvP_dgwuIPnGO",
+        },
         .protobuf = .{
             .lazy = true,
             // Upstream 5.0.0 (`Arwalk/zig-protobuf` 1f6cb06) is 0.16-clean
@@ -49,7 +52,6 @@
         "build.zig.zon",
         "src",
         "tools",
-        "vendor/safetensors-zg",
         // For example...
         //"LICENSE",
         //"README.md",
