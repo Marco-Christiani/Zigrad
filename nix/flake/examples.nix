@@ -65,6 +65,12 @@
       mainProgram = "llama-training";
       configuration = buildConfigurations."xla:cuda+iree:cuda";
     };
+    llamaTrainingCpu = mkZigExample {
+      name = "llama-training";
+      mainProgram = "llama-training";
+      configuration = buildConfigurations."xla:cpu";
+      zigArgs = ["-Dpjrt=true" "-Diree=false"];
+    };
     cifar10Train = mkZigExample {
       name = "cifar10-lifecycle";
       mainProgram = "cifar10-train";
@@ -233,6 +239,7 @@
         zigrad-example-cifar10-train = cifar10Train;
         zigrad-example-cifar10-tests = cifar10Tests;
         zigrad-example-llama-training = llamaTraining;
+        zigrad-example-llama-training-cpu = llamaTrainingCpu;
         zigrad-example-mnist = mnist;
         zigrad-example-mlir-cpp = mlirCpp;
         zigrad-example-mlir-cpp-dev = mlirCpp.dev;
@@ -267,6 +274,11 @@
           type = "app";
           program = "${llamaTraining}/bin/llama-training";
           meta.description = "Run the Zigrad LLaMA training example";
+        };
+        zigrad-example-llama-training-cpu = {
+          type = "app";
+          program = "${llamaTrainingCpu}/bin/llama-training";
+          meta.description = "Run the Zigrad LLaMA CPU training example";
         };
         zigrad-example-cifar10-cpu = {
           type = "app";

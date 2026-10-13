@@ -9,6 +9,9 @@ const build_options = @import("build_options");
 ///
 /// i-k-j loop order for marginally better cache behavior on A.
 /// Caller must zero C before calling if accumulation is not desired.
+///
+/// **Would want to exclude this for anything beyond trivial sizes.**
+/// *Everything should absolutely demolish this*
 pub fn gemm(
     comptime T: type,
     m: i64,

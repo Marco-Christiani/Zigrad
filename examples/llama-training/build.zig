@@ -32,6 +32,10 @@ pub fn build(b: *std.Build) void {
     executable.root_module.addRPathSpecial("/run/opengl-driver/lib");
     b.installArtifact(executable);
 
+    const tests = b.addTest(.{ .root_module = executable.root_module });
+    const run_tests = b.addRunArtifact(tests);
+    b.step("test", "Run LLaMA input and observation tests").dependOn(&run_tests.step);
+
     const run_command = b.addRunArtifact(executable);
     run_command.step.dependOn(b.getInstallStep());
     run_command.addPassthruArgs();
