@@ -3,6 +3,7 @@
   stdenv,
   buildBazelPackage,
   # native build inputs
+  bash,
   python3,
   bazel_7,
   patchelf,
@@ -308,71 +309,100 @@
     PY
   '';
 
-  fetchPreInstall = ''
+  toolEnvironment = ''
+    export PATH="${lib.makeBinPath [bash python3]}:$PATH"
+    export BAZEL_SH="${bash}/bin/bash"
+  '';
+
+  repairPythonText = ''
+    ${python3}/bin/python - "$repair_root" '${python3}/bin/python' <<'PY'
+    import pathlib
+    import sys
+
+    root, interpreter = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            content = path.read_bytes()
+            repaired = content.replace(b"/usr/bin/env python3", interpreter)
+            repaired = repaired.replace(b"/usr/bin/env python", interpreter)
+            if repaired != content:
+                path.write_bytes(repaired)
+        except OSError as error:
+            raise RuntimeError(f"PJRT Python repair failed: {path}: {error}") from error
+    PY
+  '';
+
+  repairDeps = ''
+    (
     set -euo pipefail
+    ${toolEnvironment}
+
+    ${python3}/bin/python - "$bazelOut/external" '${bash}/bin/bash' <<'PY'
+    import pathlib
+    import sys
+
+    root, interpreter = pathlib.Path(sys.argv[1]), sys.argv[2].encode()
+    for name in ("local_config_sh", "local_config_shell"):
+        path = root / name / "BUILD"
+        content = path.read_bytes()
+        token = b"@ZG_PJRT_BASH@"
+        if content.count(token) != 1:
+            raise RuntimeError(f"PJRT shell repair requires one token: {path}")
+        path.write_bytes(content.replace(token, interpreter))
+    PY
+
+    for repository in rules_ml_toolchain XNNPACK; do
+      repair_root="$bazelOut/external/$repository"
+      test -d "$repair_root" || { echo "PJRT repair missing repository: $repair_root" >&2; exit 1; }
+      patchShebangs --update "$repair_root" || { echo "PJRT shebang repair failed: $repair_root" >&2; exit 1; }
+      ${repairPythonText}
+    done
+
+    substituteInPlace "$bazelOut/external/XNNPACK/ynnpack/build_defs.bzl" \
+      --replace-fail 'cmd = "$(location ' 'cmd = "$''${PYTHON_BIN_PATH} $(location '
+
+    template="$bazelOut/external/rules_python/python/private/python_bootstrap_template.txt"
+    test -f "$template" || { echo "PJRT repair missing template: $template" >&2; exit 1; }
+    substituteInPlace "$template" --replace-fail '%shebang%' '#!${python3}/bin/python'
+    repair_root="$bazelOut/external/rules_python"
+    ${repairPythonText}
 
     tool_rpath="\$ORIGIN/../lib:\$ORIGIN/../lib64:${lib.makeLibraryPath [stdenv.cc.cc zlib ncurses]}"
 
     patch_elf_one() {
       local p="$1"
-      [ -e "$p" ] || return 0
-
-      local real="$p"
-      if [ -L "$p" ] && command -v readlink >/dev/null 2>&1; then
-        real="$(readlink -f "$p" 2>/dev/null || echo "$p")"
+      local description interp
+      description="$(file -b "$p")" || { echo "PJRT ELF classification failed: $p" >&2; return 1; }
+      if [[ "$description" != ELF* ]]; then
+        return 0
       fi
-      [ -f "$real" ] || return 0
-
-      chmod u+w "$real" 2>/dev/null || true
-
-      if file -L "$p" 2>/dev/null | grep -q 'ELF '; then
-        local interp=""
-        interp="$(patchelf --print-interpreter "$real" 2>/dev/null || true)"
-        case "$interp" in
-          /lib64/ld-linux-x86-64.so.2|/lib/ld-linux-x86-64.so.2)
-            patchelf --set-interpreter "${stdenv.cc.bintools.dynamicLinker}" "$real" || true
-            patchelf --set-rpath "$tool_rpath" "$real" || true
-            ;;
-        esac
-      fi
+      case "$description" in
+        *'interpreter '*)
+          interp="$(patchelf --print-interpreter "$p")" || { echo "PJRT ELF interpreter read failed: $p" >&2; return 1; }
+          case "$interp" in
+            /lib64/ld-linux-x86-64.so.2|/lib/ld-linux-x86-64.so.2|"${stdenv.cc.bintools.dynamicLinker}") ;;
+            *) echo "PJRT ELF interpreter unsupported: $p: $interp" >&2; return 1 ;;
+          esac
+          patchelf --set-interpreter "${stdenv.cc.bintools.dynamicLinker}" "$p" || { echo "PJRT ELF interpreter repair failed: $p" >&2; return 1; }
+          ;;
+        *'shared object'*) ;;
+        *) return 0 ;;
+      esac
+      local existing_rpath
+      existing_rpath="$(patchelf --print-rpath "$p")" || { echo "PJRT ELF RPATH read failed: $p" >&2; return 1; }
+      patchelf --set-rpath "$tool_rpath''${existing_rpath:+:$existing_rpath}" "$p" || { echo "PJRT ELF RPATH repair failed: $p" >&2; return 1; }
     }
 
-    patch_elf_tree() {
-      local root="$1"
-      [ -d "$root" ] || return 0
-      chmod -R u+w "$root" 2>/dev/null || true
-
-      find -L "$root" \
-        \( -path '*/bin/*' -o -path '*/tools/*' -o -path '*/.runfiles/*/bin/*' -o -path '*/python_*/*/bin/*' \) \
-        \( -type f -o -type l \) \
-        -print0 2>/dev/null |
-      while IFS= read -r -d $'\0' f; do
-        patch_elf_one "$f"
-      done
-    }
-
-    patch_wrappers_shebangs() {
-      local root="$1"
-      [ -d "$root" ] || return 0
-      find -L "$root" -type d -name wrappers -print0 2>/dev/null |
-      while IFS= read -r -d $'\0' d; do
-        chmod -R u+w "$d" 2>/dev/null || true
-        patchShebangs "$d" || true
-      done
-    }
-
-    patch_wrappers_shebangs "$bazelOut/external/rules_ml_toolchain"
-      if [ -d "$bazelOut/external/rules_ml_toolchain" ]; then
-        while IFS= read -r f; do
-          sed -i "s|/usr/bin/env python3|${python3}/bin/python|g" "$f" || true
-          sed -i "s|/usr/bin/env python|${python3}/bin/python|g" "$f" || true
-        done < <(grep -rl "/usr/bin/env python3" "$bazelOut/external/rules_ml_toolchain" 2>/dev/null || true)
-        while IFS= read -r f; do
-          sed -i "s|/usr/bin/env python|${python3}/bin/python|g" "$f" || true
-        done < <(grep -rl "/usr/bin/env python" "$bazelOut/external/rules_ml_toolchain" 2>/dev/null || true)
-      fi
-    patch_elf_tree "$bazelOut/external"
-    patch_elf_tree "$bazelOut/execroot"
+    find "$bazelOut/external" \
+      \( -type d \( -name test -o -name tests -o -name llvm-raw \) -prune \) -o \
+      \( -type f \( -path '*/bin/*' -o -path '*/tools/*' -o -path '*/lib/*' -o -path '*/lib64/*' \) -print0 \) \
+      > "$NIX_BUILD_TOP/pjrt-elf-candidates"
+    while IFS= read -r -d $'\0' candidate; do
+      patch_elf_one "$candidate"
+    done < "$NIX_BUILD_TOP/pjrt-elf-candidates"
+    )
   '';
 in
   assert lib.assertMsg
@@ -416,6 +446,7 @@ in
         src = xlaSrc;
 
         nativeBuildInputs = [
+          bash
           python3
           patchelf
           file
@@ -423,7 +454,10 @@ in
 
         postPatch = postPatchScript;
 
+        preConfigure = repairDeps;
+
         preBuild = ''
+          ${toolEnvironment}
           ${writeBazelrc}
 
           python3 ${./parse_bazelrc.py} --output ./bazel-config.json
@@ -438,33 +472,11 @@ in
 
           ${validateHermeticCudaSupport}
 
-          while IFS= read -r f; do
-            sed -i "s|/usr/bin/env python3|${python3}/bin/python|g" "$f" || true
-            sed -i "s|/usr/bin/env python|${python3}/bin/python|g" "$f" || true
-          done < <(grep -rl "/usr/bin/env python" "$install_base" 2>/dev/null || true)
-
-          # Re-patch shebangs in the unpacked deps with current nixpkgs tools.
-          # The deps tarball may contain stale shebangs from a previous fetch
-          # (e.g. /nix/store/<old-hash>-bash that no longer exists).
-          if [ -d "$bazelOut/external/rules_ml_toolchain" ]; then
-            patchShebangs "$bazelOut/external/rules_ml_toolchain" || true
-          fi
-
-          if [ -d "$bazelOut/external/XNNPACK" ]; then
-            patchShebangs "$bazelOut/external/XNNPACK" || true
-            substituteInPlace "$bazelOut/external/XNNPACK/ynnpack/build_defs.bzl" \
-              --replace 'cmd = "$(location ' 'cmd = "$${PYTHON_BIN_PATH} $(location '
-          fi
-
-          if [ -f "$bazelOut/external/rules_python/python/private/python_bootstrap_template.txt" ]; then
-            sed -i "s|%shebang%|#!${python3}/bin/python|g" \
-              "$bazelOut/external/rules_python/python/private/python_bootstrap_template.txt"
-            sed -i "s|/usr/bin/env python3|${python3}/bin/python|g" \
-              "$bazelOut/external/rules_python/python/private/python_bootstrap_template.txt"
-            sed -i "s|/usr/bin/env python|${python3}/bin/python|g" \
-              "$bazelOut/external/rules_python/python/private/python_bootstrap_template.txt"
-          fi
-
+          (
+            set -euo pipefail
+            repair_root="$install_base"
+            ${repairPythonText}
+          )
         '';
 
         installPhase = ''
@@ -530,38 +542,63 @@ in
         hash = depsHash;
         src = xlaSrc;
         nativeBuildInputs = [
-          patchelf
-          file
+          bash
+          python3
         ];
         postPatch = postPatchScript;
-        preBuild = writeBazelrc;
-        preInstall = fetchPreInstall;
+        preBuild = toolEnvironment + writeBazelrc;
         installPhase = ''
           runHook preInstall
+          (
+            set -euo pipefail
+            ${python3}/bin/python - "$bazelOut/external" "$NIX_BUILD_TOP" '${bash}/bin/bash' <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import sys
 
-          # Remove all vcs files
-          rm -rf $(find $bazelOut/external -type d -name .git)
-          rm -rf $(find $bazelOut/external -type d -name .svn)
-          rm -rf $(find $bazelOut/external -type d -name .hg)
+          root, build_top, interpreter = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3].encode()
+          for name in ("bazel_tools", "rules_java_builtin", "internal_platforms_do_not_use"):
+              path = root / name
+              if path.is_symlink():
+                  path.unlink()
+              elif path.exists():
+                  shutil.rmtree(path)
+          def fail_walk(error):
+              raise error
 
-          if [ -e "$bazelOut/external/bazel_tools" ]; then
-            echo "[deps] bazel_tools already present at $bazelOut/external/bazel_tools"
-          else
-            install_base="$(bazel info install_base)"
-            echo "[deps] creating bazel_tools symlink to $install_base/embedded_tools"
-            ln -s "$install_base/embedded_tools" "$bazelOut/external/bazel_tools"
-          fi
-
-          # Patching symlinks to remove build directory reference
-          find $bazelOut/external -type l | while read symlink; do
-            new_target="$(readlink "$symlink" | sed "s,$NIX_BUILD_TOP,NIX_BUILD_TOP,")"
-            rm "$symlink"
-            ln -sf "$new_target" "$symlink"
-          done
-
-          echo '${bazel_7.name}' > $bazelOut/external/.nix-bazel-version
-
-          (cd $bazelOut/ && tar czf $out --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner external/)
+          for directory, names, files in os.walk(root, followlinks=False, onerror=fail_walk):
+              for name in list(names):
+                  if name in (".git", ".svn", ".hg"):
+                      path = pathlib.Path(directory) / name
+                      if path.is_symlink():
+                          path.unlink()
+                      else:
+                          shutil.rmtree(path)
+                      names.remove(name)
+              for name in names + files:
+                  path = pathlib.Path(directory) / name
+                  if path.is_symlink():
+                      target = os.readlink(path)
+                      if target == build_top or target.startswith(build_top + "/"):
+                          path.unlink()
+                          path.symlink_to("NIX_BUILD_TOP" + target[len(build_top):])
+                      elif build_top in target:
+                          raise RuntimeError(f"PJRT symlink has embedded build root: {path}: {target}")
+          for path in root.glob("*.marker"):
+              if path.is_symlink() or not path.is_file():
+                  raise RuntimeError(f"PJRT marker is not a regular file: {path}")
+              path.write_bytes(b"\n")
+          for name in ("local_config_sh", "local_config_shell"):
+              path = root / name / "BUILD"
+              content = path.read_bytes()
+              if content.count(interpreter) != 1:
+                  raise RuntimeError(f"PJRT shell normalization requires one selected Bash path: {path}")
+              path.write_bytes(content.replace(interpreter, b"@ZG_PJRT_BASH@"))
+          PY
+            echo '${bazel_7.name}' > "$bazelOut/external/.nix-bazel-version"
+            (cd "$bazelOut" && tar czf "$out" --sort=name --mtime='@1' --owner=0 --group=0 --numeric-owner external/)
+          )
 
           runHook postInstall
         '';

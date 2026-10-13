@@ -55,7 +55,7 @@
     cudaSupport = false;
     cpuMathLibrary = "onednn";
     cpuNativeTuning = withNativeTuning;
-    depsHash = "sha256-7sTZkp4pWDJz+ngf6vyS/Okn1tWyLHXIkIr5Ym/uUWA=";
+    depsHash = "sha256-mC0OEZOKXVpegK1YPGrpvCZfd8R4xCsoxsFVQk6mwQo=";
   };
 
   xlaPjrtPluginsCuda = pkgs.callPackage ../../packages/xla-pjrt-runtime-bazel.nix {
@@ -64,7 +64,7 @@
     cudaSupport = true;
     cpuMathLibrary = "onednn-thunk";
     cpuNativeTuning = withNativeTuning;
-    depsHash = "sha256-+ZFReBX1+BhW58gXTFvt66g8kLuihIwOIo3Ufew0Uac=";
+    depsHash = "sha256-/wopykBAEjW2wM8opkVlHV9iH9YGq4l5dOG5rxN2/g8=";
   };
 in {
   inherit
