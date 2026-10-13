@@ -263,22 +263,22 @@ pub fn donated_input_indices(
         if (info != .@"struct" or !info.@"struct".is_tuple)
             @compileError("donated_input_indices: SpecsTuple must be a tuple type");
 
-        const fields = info.@"struct";
+        const field_types = info.@"struct".field_types;
 
         // Validate argument positions and count their flattened leaves.
         var count: usize = 0;
         for (donated_argnums, 0..) |arg_idx, position| {
-            if (arg_idx >= fields.len) @compileError("donated argument position is out of bounds");
+            if (arg_idx >= field_types.len) @compileError("donated argument position is out of bounds");
             if (is_donated(donated_argnums[0..position], arg_idx))
                 @compileError("donated argument positions must be unique");
-            count += TensorTree.leaf_count(fields[arg_idx].type);
+            count += TensorTree.leaf_count(field_types[arg_idx]);
         }
 
         var result: [count]usize = undefined;
         var out_idx: usize = 0;
         var flat_offset: usize = 0;
-        for (fields, 0..) |field, arg_idx| {
-            const n = TensorTree.leaf_count(field.type);
+        for (field_types, 0..) |field_type, arg_idx| {
+            const n = TensorTree.leaf_count(field_type);
             if (is_donated(donated_argnums, arg_idx)) {
                 for (0..n) |i| {
                     result[out_idx] = flat_offset + i;

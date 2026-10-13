@@ -79,7 +79,7 @@ pub fn load_plugin(path: []const u8, options: config.PluginOptions) !Api {
     }
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path_z = try std.fmt.bufPrintZ(&path_buf, "{s}", .{canonical});
+    const path_z = try std.mem.printSentinel(&path_buf, "{s}", .{canonical}, 0);
 
     const handle = c.dlopen(path_z, c.RTLD_NOW | c.RTLD_GLOBAL) orelse {
         std.debug.print("dlopen failed: {s}\n", .{dl_err_msg()});

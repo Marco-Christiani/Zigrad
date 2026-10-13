@@ -585,9 +585,9 @@ pub fn call_error(operation: []const u8, status: c_int) TvmError {
 /// Set TVM's raised error from a Zig callback error.
 fn fail_callback(err: anyerror) c_int {
     var message_buffer: [256]u8 = undefined;
-    const message = std.fmt.bufPrintZ(&message_buffer, "Zig callback failed: {s}", .{
+    const message = std.mem.printSentinel(&message_buffer, "Zig callback failed: {s}", .{
         @errorName(err),
-    }) catch "Zig callback failed";
+    }, 0) catch "Zig callback failed";
     c.TVMFFIErrorSetRaisedFromCStr("RuntimeError", message.ptr);
     return -1;
 }
