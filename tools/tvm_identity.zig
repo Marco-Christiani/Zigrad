@@ -28,8 +28,9 @@ const Walk = struct {
         const key = b.fmt("{x}:{s}", .{ @intFromPtr(module), path });
         if (self.visited.contains(key)) return;
         try self.visited.put(key, {});
-        b.dependOnFileContents(b.path(path));
-        const bytes = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, try b.root.joinString(b.allocator, path), b.allocator, .limited(4 * 1024 * 1024));
+        const source_path = try b.root.joinString(b.allocator, path);
+        b.dependOnFileContents(.{ .cwd_relative = source_path });
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, source_path, b.allocator, .limited(4 * 1024 * 1024));
         try self.inputs.put(path, bytes);
         const source = try b.allocator.dupeSentinel(u8, bytes, 0);
         var tokenizer = std.zig.Tokenizer.init(source);
@@ -46,11 +47,17 @@ const Walk = struct {
             const imported = try std.zig.string_literal.parseAlloc(b.allocator, source[literal.loc.start..literal.loc.end]);
             if (embedded or std.mem.endsWith(u8, imported, ".zig")) {
                 const absolute = try std.fs.path.resolve(b.allocator, &.{ try b.root.joinString(b.allocator, std.fs.path.dirname(path) orelse "."), imported });
-                const relative = try std.fs.path.relative(b.allocator, try b.root.toString(b.allocator), null, try b.root.toString(b.allocator), absolute);
+                const relative = try std.fs.path.relative(
+                    b.allocator,
+                    b.graph.environ_map.get("PWD") orelse ".",
+                    null,
+                    try b.root.toString(b.allocator),
+                    absolute,
+                );
                 if (std.mem.startsWith(u8, relative, "..")) return error.SourceOutsideRepository;
                 try self.edge(path, imported, b.fmt("{s}:{s}", .{ if (embedded) "embedded" else "relative", relative }));
                 if (embedded) {
-                    b.dependOnFileContents(b.path(relative));
+                    b.dependOnFileContents(.{ .cwd_relative = absolute });
                     const data = try std.Io.Dir.cwd().readFileAlloc(b.graph.io, absolute, b.allocator, .limited(64 * 1024 * 1024));
                     try self.inputs.put(relative, data);
                 } else try self.visit(module, relative);
@@ -71,7 +78,13 @@ const Walk = struct {
                             .cwd_relative => |cwd| cwd,
                             else => return error.UnresolvedModuleRoot,
                         };
-                        const relative = try std.fs.path.relative(b.allocator, try b.root.toString(b.allocator), null, try b.root.toString(b.allocator), absolute);
+                        const relative = try std.fs.path.relative(
+                            b.allocator,
+                            b.graph.environ_map.get("PWD") orelse ".",
+                            null,
+                            try b.root.toString(b.allocator),
+                            absolute,
+                        );
                         if (std.mem.startsWith(u8, relative, "..")) {
                             // Dependency roots are pinned by the package graph.
                             try self.edge(path, imported, "external:package");

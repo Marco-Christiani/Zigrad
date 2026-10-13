@@ -60,6 +60,14 @@ pub fn build(b: *std.Build) void {
         exe.root_module.linkSystemLibrary("StablehloCAPI", .{});
     }
     if (has_mkl) {
+        const c_mkl = b.addTranslateC(.{
+            .root_source_file = .{ .cwd_relative = b.fmt("{s}/include/mkl_cblas.h", .{sdk_abs}) },
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        });
+        c_mkl.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{sdk_abs}) });
+        exe.root_module.addImport("c-mkl", c_mkl.createModule());
         exe.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/include", .{sdk_abs}) });
         exe.root_module.linkSystemLibrary("mkl_rt", .{});
     }
@@ -73,7 +81,7 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     b.step("run", "Run the benchmark").dependOn(&run_cmd.step);
 
     // Tests.
@@ -85,7 +93,7 @@ pub fn build(b: *std.Build) void {
 
 fn resolve_absolute(b: *std.Build, path: []const u8) []const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
-    const build_root = b.build_root.path orelse ".";
+    const build_root = b.fmt("{f}", .{b.root});
     return std.fs.path.join(b.allocator, &.{ build_root, path }) catch @panic("path join failed");
 }
 

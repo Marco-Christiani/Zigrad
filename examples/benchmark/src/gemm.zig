@@ -9,9 +9,6 @@ const build_options = @import("build_options");
 ///
 /// i-k-j loop order for marginally better cache behavior on A.
 /// Caller must zero C before calling if accumulation is not desired.
-///
-/// **Would want to exclude this for anything beyond trivial sizes.**
-/// *Everything should absolutely demolish this*
 pub fn gemm(
     comptime T: type,
     m: i64,
@@ -38,9 +35,7 @@ pub fn gemm(
     }
 }
 
-const blas = if (build_options.has_mkl) @cImport({
-    @cInclude("mkl_cblas.h");
-}) else struct {};
+const blas = if (build_options.has_mkl) @import("c-mkl") else struct {};
 
 pub const has_blas = build_options.has_mkl;
 
@@ -85,7 +80,7 @@ pub fn blas_gemm(
 test gemm {
     const a = [_]f32{ 1.0, 2.0, 3.0, 4.0 };
     const b = [_]f32{ 5.0, 6.0, 7.0, 8.0 };
-    var c = [_]f32{0.0} ** 4;
+    var c: [4]f32 = @splat(0.0);
     const expected = [_]f32{ 19.0, 22.0, 43.0, 50.0 };
 
     gemm(f32, 2, 2, 2, &a, 2, &b, 2, &c, 2);
@@ -98,7 +93,7 @@ test gemm {
 test "gemm f16" {
     const a = [_]f16{ 1.0, 2.0, 3.0, 4.0 };
     const b = [_]f16{ 5.0, 6.0, 7.0, 8.0 };
-    var c = [_]f16{0.0} ** 4;
+    var c: [4]f16 = @splat(0.0);
     const expected = [_]f16{ 19.0, 22.0, 43.0, 50.0 };
 
     gemm(f16, 2, 2, 2, &a, 2, &b, 2, &c, 2);

@@ -7,6 +7,7 @@ const parameters = @import("parameters.zig");
 const dataset_format = @import("dataset.zig");
 const build_options = @import("build_options");
 const Tensor = zg.Tensor;
+const parameter_field_names = @typeInfo(model.Params).@"struct".field_names;
 
 const vmfb align(16) = @embedFile("model.vmfb").*;
 const checkpoint align(8) = @embedFile("model.safetensors").*;
@@ -57,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
 
     var params_tree = try zg.utils.Tree(Tensor).from(allocator, params);
     defer params_tree.deinit();
-    var inputs: [std.meta.fields(model.Params).len + 1]zg.iree.Buffer = undefined;
+    var inputs: [parameter_field_names.len + 1]zg.iree.Buffer = undefined;
     var initialized: usize = 0;
     defer for (inputs[0..initialized]) |*input| input.deinit();
     for (params_tree.leaves) |param| {

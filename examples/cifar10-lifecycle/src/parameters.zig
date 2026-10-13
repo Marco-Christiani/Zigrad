@@ -2,6 +2,7 @@ const std = @import("std");
 const zg = @import("zigrad");
 const model = @import("model.zig");
 const Tensor = zg.Tensor;
+const parameter_field_names = @typeInfo(model.Params).@"struct".field_names;
 
 const zero_initialized = std.StaticStringMap(void).initComptime(.{
     .{ "stem_bias", {} },
@@ -42,11 +43,11 @@ pub fn initialize(allocator: std.mem.Allocator) !model.Params {
 pub fn map(params: model.Params, context: anytype, comptime operation: anytype) !model.Params {
     var result: model.Params = undefined;
     var initialized: usize = 0;
-    errdefer inline for (std.meta.fields(model.Params), 0..) |field, index| {
-        if (index < initialized) @field(result, field.name).deinit();
+    errdefer inline for (parameter_field_names, 0..) |field_name, index| {
+        if (index < initialized) @field(result, field_name).deinit();
     };
-    inline for (std.meta.fields(model.Params)) |field| {
-        @field(result, field.name) = try operation(context, @field(params, field.name), field.name);
+    inline for (parameter_field_names) |field_name| {
+        @field(result, field_name) = try operation(context, @field(params, field_name), field_name);
         initialized += 1;
     }
     return result;
@@ -54,5 +55,5 @@ pub fn map(params: model.Params, context: anytype, comptime operation: anytype) 
 
 /// Release every parameter tensor.
 pub fn deinit(params: *model.Params) void {
-    inline for (std.meta.fields(model.Params)) |field| @field(params, field.name).deinit();
+    inline for (parameter_field_names) |field_name| @field(params, field_name).deinit();
 }

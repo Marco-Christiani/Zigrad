@@ -405,7 +405,7 @@ pub const Harness = struct {
         var stdout_writer = std.Io.File.stdout().writer(self.io, &buffer);
         const writer = &stdout_writer.interface;
 
-        const header_sep = "\n" ++ "=" ** 60 ++ "\n";
+        const header_sep = "\n" ++ @as([60]u8, @splat('=')) ++ "\n";
         try writer.print("{s}Matmul Benchmark Results ({t}){s}", .{ header_sep, self.config.dtype, header_sep });
 
         var seen_shapes = std.AutoHashMap(Shape, void).init(self.allocator);

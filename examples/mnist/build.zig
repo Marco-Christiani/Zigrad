@@ -48,12 +48,12 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     b.step("run", "Run MNIST training").dependOn(&run_cmd.step);
 }
 
 fn resolve_absolute(b: *std.Build, path: []const u8) []const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
-    const build_root = b.build_root.path orelse ".";
+    const build_root = b.fmt("{f}", .{b.root});
     return std.fs.path.join(b.allocator, &.{ build_root, path }) catch @panic("path join failed");
 }

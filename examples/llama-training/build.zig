@@ -34,13 +34,13 @@ pub fn build(b: *std.Build) void {
 
     const run_command = b.addRunArtifact(executable);
     run_command.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_command.addArgs(args);
+    run_command.addPassthruArgs();
     b.step("run", "Run LLaMA training or inference").dependOn(&run_command.step);
 }
 
 fn resolve_absolute(b: *std.Build, path: []const u8) []const u8 {
     if (std.fs.path.isAbsolute(path)) return path;
-    const build_root = b.build_root.path orelse ".";
+    const build_root = b.fmt("{f}", .{b.root});
     return std.fs.path.join(b.allocator, &.{ build_root, path }) catch
         @panic("path join failed");
 }
