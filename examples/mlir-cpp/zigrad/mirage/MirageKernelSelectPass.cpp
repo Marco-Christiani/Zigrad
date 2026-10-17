@@ -356,7 +356,7 @@ struct RmsNormMatmulPattern final : RewritePattern {
     // Verify x is the same Value used in sq_op.
     if (sq_op->getOperand(0) != x) return failure();
 
-    // Single-use checks for internal chain ops.
+    // Require one use for each result checked below
     if (!denom_add_op->getResult(0).hasOneUse()) return failure();
     if (!mean_mul_op->getResult(0).hasOneUse()) return failure();
     if (!reduce_op->getResult(0).hasOneUse()) return failure();
@@ -366,7 +366,7 @@ struct RmsNormMatmulPattern final : RewritePattern {
     if (!normed_mul_op->getResult(0).hasOneUse()) return failure();
     if (!gamma_bc_op->getResult(0).hasOneUse()) return failure();
     // NOTE: gamma_mul_op, convert_to_bf16_op, and reshape_op may have >1 use
-    // in the dual-use case (e.g. gate+up matmuls share the same rms_norm chain).
+    //       when gate and up matmuls share the same rms_norm chain
     // The first match replaces one dot_general, the second replaces the other,
     // then the shared chain becomes dead and is erased.
 

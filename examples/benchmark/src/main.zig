@@ -1,7 +1,7 @@
 //! Matmul benchmark: compare kernel implementations across backends.
 //!
-//! Standalone example that demonstrates TVM and compiled backend GEMM
-//!  and compares them against naive Zig and BLAS baselines.
+//! Compares TVM and compiled backend GEMM
+//!  against naive Zig and BLAS baselines.
 //!
 //! Usage:
 //!   benchmark [run] [options]          Run benchmarks (default subcommand)
@@ -37,7 +37,7 @@ const log = std.log.scoped(.benchmark);
 
 const Subcommand = enum { run, tune };
 
-/// Minimal positional iterator over `std.process.Init.minimal.args`.
+/// Positional iterator over `std.process.Init.minimal.args`.
 const ArgvIterator = struct {
     argv: []const [:0]const u8,
     idx: usize = 0,

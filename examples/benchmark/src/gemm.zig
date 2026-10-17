@@ -5,13 +5,12 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-/// Naive strawman triple-loop matmul: C += A @ B.
+/// Triple-loop matmul baseline: C += A @ B.
 ///
 /// i-k-j loop order for marginally better cache behavior on A.
 /// Caller must zero C before calling if accumulation is not desired.
 ///
-/// **Would want to exclude this for anything beyond trivial sizes.**
-/// *Everything should absolutely demolish this*
+/// The loop nest visits individual elements in i-k-j order.
 pub fn gemm(
     comptime T: type,
     m: i64,
