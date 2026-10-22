@@ -161,7 +161,7 @@ fn read_file(
     io: std.Io,
     allocator: std.mem.Allocator,
     path: []const u8,
-) ![]u8 {
+) ![]align(iree.bytecode_alignment_bytes) u8 {
     var file = if (std.fs.path.isAbsolute(path))
         try std.Io.Dir.openFileAbsolute(io, path, .{})
     else
@@ -169,7 +169,11 @@ fn read_file(
     defer file.close(io);
 
     const length = try file.length(io);
-    const bytes = try allocator.alloc(u8, @intCast(length));
+    const bytes = try allocator.alignedAlloc(
+        u8,
+        .fromByteUnits(iree.bytecode_alignment_bytes),
+        @intCast(length),
+    );
     errdefer allocator.free(bytes);
     _ = try file.readPositionalAll(io, bytes, 0);
     return bytes;

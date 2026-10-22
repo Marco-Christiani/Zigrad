@@ -4,6 +4,7 @@ const std = @import("std");
 const compilation = @import("compilation");
 const stablehlo = @import("../stablehlo.zig");
 const CompilerConfig = @import("config.zig").CompilerConfig;
+const bytecode_alignment_bytes = @import("runtime.zig").bytecode_alignment_bytes;
 
 const log = std.log.scoped(.@"zg/iree_compiler");
 
@@ -24,7 +25,8 @@ pub const CompileOptions = struct {
 
 /// IREE VM bytecode released with `deinit`.
 pub const Artifact = struct {
-    bytes: []u8,
+    /// VMFB bytes allocated by `allocator` with `bytecode_alignment_bytes`.
+    bytes: []align(bytecode_alignment_bytes) u8,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *Artifact) void {
@@ -65,6 +67,7 @@ pub const Compiler = struct {
                 else => error.CompilationFailed,
             };
         };
+        std.debug.assert(@intFromPtr(bytes.ptr) % bytecode_alignment_bytes == 0);
         return .{
             .bytes = bytes,
             .allocator = ctx.allocator,
@@ -72,13 +75,14 @@ pub const Compiler = struct {
     }
 };
 
-/// Compile MLIR source into VMFB bytes allocated by `allocator`.
+/// Compile MLIR source into VMFB bytes allocated by `allocator` with
+///  `bytecode_alignment_bytes`.
 pub fn compile(
     io: std.Io,
     allocator: std.mem.Allocator,
     source: []const u8,
     options: CompileOptions,
-) ![]u8 {
+) ![]align(bytecode_alignment_bytes) u8 {
     const config = options.config;
     const backend_argument = try allocator.print("--iree-hal-target-backends={s}", .{config.target_backend});
     defer allocator.free(backend_argument);
@@ -131,11 +135,13 @@ pub fn compile(
         },
     }
 
-    const vmfb = try std.Io.Dir.cwd().readFileAlloc(
+    const vmfb = try std.Io.Dir.cwd().readFileAllocOptions(
         io,
         output_path,
         allocator,
         .limited(256 * 1024 * 1024),
+        .fromByteUnits(bytecode_alignment_bytes),
+        null,
     );
     log.debug("compiled {d} bytes of MLIR into {d} bytes of VMFB", .{
         source.len,

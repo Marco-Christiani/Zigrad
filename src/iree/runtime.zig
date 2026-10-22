@@ -22,14 +22,21 @@ pub const DeviceConstruction = enum {
     embedded_elf_sync,
 };
 
+/// Alignment in bytes of owned VMFB storage. Allocators receive it with every
+///  VMFB allocation and release.
+pub const bytecode_alignment_bytes = 16;
+
 /// VMFB storage retained for the lifetime of a loaded executable.
 pub const Bytecode = union(enum) {
     /// Storage borrowed from memory that outlives the executable.
     borrowed: []const u8,
 
     /// Storage released with its allocator when the executable is released.
+    ///
+    /// `bytes` was allocated with `bytecode_alignment_bytes`, which the slice
+    ///  type carries into the release.
     owned: struct {
-        bytes: []u8,
+        bytes: []align(bytecode_alignment_bytes) u8,
         allocator: std.mem.Allocator,
     },
 
@@ -213,6 +220,10 @@ pub const Runtime = struct {
         entry_name: []const u8,
     ) Error!Executable {
         const runtime = runtime_state(self);
+        switch (bytecode.*) {
+            .owned => |storage| std.debug.assert(@intFromPtr(storage.bytes.ptr) % bytecode_alignment_bytes == 0),
+            .borrowed => {},
+        }
         const session = try abi.session_create(runtime.instance, runtime.device);
         errdefer abi.session_release(session);
 

@@ -84,6 +84,10 @@ pub fn build(b: *std.Build) !void {
     compilation_mod.addImport("device", device_mod);
     compilation_mod.addImport("rtti", rtti_mod);
 
+    const adversarial_allocator_mod = b.createModule(.{
+        .root_source_file = b.path("src/tests/adversarial_allocator.zig"),
+    });
+
     const zigrad_mod = b.addModule("zigrad", .{
         .root_source_file = b.path("src/zigrad.zig"),
         .target = target,
@@ -223,7 +227,10 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addIncludePath(b.path("src"));
     if (sdk_include) |include| exe.root_module.addIncludePath(.{ .cwd_relative = include });
     if (use_mlir) link_mlir_stablehlo_capi(exe, sdk_lib.?);
-    if (use_iree) link_iree(zigrad_mod, sdk_lib.?, use_iree_embedded_elf);
+    if (use_iree) {
+        link_iree(zigrad_mod, sdk_lib.?, use_iree_embedded_elf);
+        zigrad_mod.addImport("adversarial_allocator", adversarial_allocator_mod);
+    }
     if (has_external_integration)
         add_runtime_bundle(b, exe, .{
             .runtime_root = runtime_root_opt orelse sdk_runtime.?,
@@ -338,6 +345,33 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_pr_seam_tests.step);
+
+    if (use_iree) {
+        // Runs with its own log root because the failure paths under test log
+        //  errors, which the test runner counts as failures.
+        const loader_failure = b.addExecutable(.{
+            .name = "iree-loader-failure",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/tests/iree_loader_failure.zig"),
+                .target = target,
+                .optimize = optimize,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "zigrad", .module = zigrad_mod },
+                    .{ .name = "adversarial_allocator", .module = adversarial_allocator_mod },
+                },
+            }),
+        });
+        add_runtime_bundle(b, loader_failure, .{
+            .runtime_root = runtime_root_opt orelse sdk_runtime.?,
+            .install_runtime_link = install_runtime_link,
+            .cuda = use_cuda_runtime,
+        });
+        const run_loader_failure = b.addRunArtifact(loader_failure);
+        b.step("iree-loader-failure", "Check failed IREE loading keeps artifact ownership")
+            .dependOn(&run_loader_failure.step);
+        test_step.dependOn(&run_loader_failure.step);
+    }
 
     const shared_test_modules = [_]struct { name: []const u8, module: *std.Build.Module }{
         .{ .name = "pr-tests", .module = pr_mod },
