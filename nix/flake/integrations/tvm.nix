@@ -15,12 +15,13 @@
   pipelineGenerator = pkgs.writeText "generate-tvm-pipeline-contract.py" (
     builtins.readFile ../../../scripts/generate_tvm_pipeline_contract.py
   );
-  pipelineContract = pkgs.runCommand "tvm-pipeline-contract-${source.rev}" {
-    nativeBuildInputs = [pkgs.python3];
-  } ''
-    mkdir -p "$out/share/tvm"
-    python ${pipelineGenerator} ${source.src} "$out/share/tvm/pipeline-contract.json"
-  '';
+  pipelineContract =
+    pkgs.runCommand "tvm-pipeline-contract-${source.rev}" {
+      nativeBuildInputs = [pkgs.python3];
+    } ''
+      mkdir -p "$out/share/tvm"
+      python ${pipelineGenerator} ${source.src} "$out/share/tvm/pipeline-contract.json"
+    '';
   cudaIntrinsicGenerator = pkgs.writeText "generate-tvm-cuda-intrinsics.py" (
     builtins.readFile ../../../scripts/generate_cuda_intrinsics.py
   );
@@ -83,8 +84,8 @@
     version = source.rev;
     cudaSupport = false;
   };
-  tvm = tvmPackage.overrideAttrs (old: { passthru = (old.passthru or {}) // { inherit pipelineContract; }; });
-  tvmCpu = tvmCpuPackage.overrideAttrs (old: { passthru = (old.passthru or {}) // { inherit pipelineContract; }; });
+  tvm = tvmPackage.overrideAttrs (old: {passthru = (old.passthru or {}) // {inherit pipelineContract;};});
+  tvmCpu = tvmCpuPackage.overrideAttrs (old: {passthru = (old.passthru or {}) // {inherit pipelineContract;};});
 in {
   inherit tvm tvmCpu tvmCudaIntrinsics;
 }
