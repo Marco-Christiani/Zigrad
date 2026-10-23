@@ -1,6 +1,6 @@
 const std = @import("std");
 const device = @import("device");
-const kernel = @import("kernel");
+const kernel = @import("../kernel.zig");
 const mirage = @import("../c/mirage/api.zig");
 const cuda_driver = @import("../cuda/driver.zig");
 const cuda_nvrtc = @import("../cuda/nvrtc.zig");

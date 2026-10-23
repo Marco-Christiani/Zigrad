@@ -1,7 +1,8 @@
 //! Default validated PR to StableHLO pipeline segment.
 
-const compilation = @import("compilation");
-const pr = @import("pr");
+const compilation = @import("../../compilation.zig");
+const zg = @import("../../zigrad.zig");
+const outline = @import("../../outline.zig");
 const stablehlo = @import("../../stablehlo.zig");
 const lower = @import("lower.zig");
 
@@ -16,8 +17,8 @@ pub fn add(
     pipeline: *compilation.Pipeline,
     options: Options,
 ) compilation.Pipeline.AddError!void {
-    try pipeline.add(pr.Validate{});
-    try pipeline.add(pr.transform.outline.Pass{});
+    try pipeline.add(zg.Validate{});
+    try pipeline.add(outline.Pass{});
     try pipeline.add(lower.Lower{
         .config = .{
             .encoding = options.encoding,

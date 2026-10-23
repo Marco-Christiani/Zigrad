@@ -8,15 +8,15 @@
 //!
 //! Provider compilation and tuning run after extraction and before substitution.
 const std = @import("std");
-const compilation = @import("compilation");
+const compilation = @import("compilation.zig");
 const device = @import("device");
 const output_mod = @import("output");
-const effects = @import("../analysis/effects.zig");
-const fingerprint = @import("../analysis/fingerprint.zig");
-const pattern = @import("../analysis/pattern.zig");
+const effects = pr.analysis.effects;
+const fingerprint = pr.analysis.fingerprint;
+const pattern = pr.analysis.pattern;
 const outline = @import("outline.zig");
-const pr = @import("../pr.zig");
-const kernel = @import("kernel");
+const pr = @import("pr");
+const kernel = @import("kernel.zig");
 
 const log = std.log.scoped(.@"zg/kernelize");
 
@@ -655,6 +655,23 @@ fn extract_test_candidates(
         .extracted = &extracted,
     }).run(program, &ctx);
     return extracted;
+}
+
+test "requested_providers parses scalar and ordered list annotations" {
+    const scalar = (try kernel.requested_providers(&.{
+        kernel.provider_annotation("tvm"),
+    })).?;
+    try std.testing.expect(scalar == .one);
+    try std.testing.expectEqual(@as(usize, 1), scalar.len());
+    try std.testing.expectEqualStrings("tvm", scalar.at(0));
+
+    const providers = (try kernel.requested_providers(&.{
+        kernel.providers_annotation(&.{ "first", "second" }),
+    })).?;
+    try std.testing.expect(providers == .many);
+    try std.testing.expectEqual(@as(usize, 2), providers.len());
+    try std.testing.expectEqualStrings("first", providers.at(0));
+    try std.testing.expectEqualStrings("second", providers.at(1));
 }
 
 test "ExtractCandidates retains nested explicit alternatives" {

@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-const compilation = @import("compilation");
+const compilation = @import("../compilation.zig");
 const LoadedProgram = @import("../execution.zig").LoadedProgram;
 const hlo_decode = @import("../c/xla/hlo_decode.zig");
 const output = @import("output");

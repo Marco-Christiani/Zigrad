@@ -6,7 +6,7 @@ pub const metadata = @import("cli/render.zig");
 /// Options that apply to every command.
 pub const GlobalOpts = struct {
     /// Emit PR to stdout or a file.
-    dump_pr: ?zg.pr.dump.Config = null,
+    dump_pr: ?zg.pr_dump.Config = null,
     /// Emit MLIR to stdout or a file.
     dump_mlir: ?zg.output.Config = null,
     /// Emit optimized HLO from the PJRT executable.
@@ -591,19 +591,19 @@ fn dump_config(value: ?[]const u8) zg.output.Config {
         .{ .target = .stdout };
 }
 
-const stdout_dump_specs = std.StaticStringMap(zg.pr.dump.Spec).initComptime(.{
-    .{ "", @as(zg.pr.dump.Spec, .{ .zxpr = .{ .mode = .auto } }) },
-    .{ "auto", @as(zg.pr.dump.Spec, .{ .zxpr = .{ .mode = .auto } }) },
-    .{ "plain", @as(zg.pr.dump.Spec, .{ .zxpr = .{ .mode = .plain } }) },
-    .{ "json", @as(zg.pr.dump.Spec, .json) },
-    .{ "binary", @as(zg.pr.dump.Spec, .binary) },
+const stdout_dump_specs = std.StaticStringMap(zg.pr_dump.Spec).initComptime(.{
+    .{ "", @as(zg.pr_dump.Spec, .{ .zxpr = .{ .mode = .auto } }) },
+    .{ "auto", @as(zg.pr_dump.Spec, .{ .zxpr = .{ .mode = .auto } }) },
+    .{ "plain", @as(zg.pr_dump.Spec, .{ .zxpr = .{ .mode = .plain } }) },
+    .{ "json", @as(zg.pr_dump.Spec, .json) },
+    .{ "binary", @as(zg.pr_dump.Spec, .binary) },
 });
 
-fn parse_dump_pr_value(value: []const u8) zg.pr.dump.Config {
+fn parse_dump_pr_value(value: []const u8) zg.pr_dump.Config {
     if (stdout_dump_specs.get(value)) |spec|
         return .{ .target = .stdout, .spec = spec };
 
-    const spec: zg.pr.dump.Spec =
+    const spec: zg.pr_dump.Spec =
         if (std.mem.endsWith(u8, value, ".json"))
             .json
         else if (std.mem.endsWith(u8, value, ".zgpr"))

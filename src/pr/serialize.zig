@@ -677,8 +677,8 @@ fn make_test_program(backing_allocator: Allocator) !pr.Program {
     op_ids[1] = custom_op.id;
     const regions = try arena.alloc(pr.Region, 1);
     const region_annotations = try arena.alloc(pr.Annotation, 4);
-    region_annotations[0] = @import("transform/outline.zig").annotation;
-    region_annotations[1] = @import("kernel").providers_annotation(&.{ "first", "second" });
+    region_annotations[0] = @import("annotations.zig").outline.annotation;
+    region_annotations[1] = .{ .name = "zigrad.kernel.provider", .value = .{ .strings = &.{ "first", "second" } } };
     region_annotations[2] = .{ .name = "example.priority", .value = .{ .integer = 3 } };
     region_annotations[3] = .{ .name = "example.payload", .value = .{ .bytes = &.{ 0, 127, 255 } } };
     regions[0] = .{
@@ -760,11 +760,19 @@ test "binary PR round trip is byte stable" {
 
     const region = parsed.functions()[0].regions[0];
     try std.testing.expectEqualStrings("serialized", region.name);
-    try std.testing.expect(try @import("transform/outline.zig").is_requested(region));
-    const providers = (try @import("kernel").requested_providers(region.annotations)).?;
-    try std.testing.expectEqual(@as(usize, 2), providers.len());
-    try std.testing.expectEqualStrings("first", providers.at(0));
-    try std.testing.expectEqualStrings("second", providers.at(1));
+    try std.testing.expect(try @import("annotations.zig").outline.is_requested(region));
+    try std.testing.expectEqual(@as(usize, 4), region.annotations.len);
+    for (region.annotations, [_][]const u8{
+        "zigrad.outline",
+        "zigrad.kernel.provider",
+        "example.priority",
+        "example.payload",
+    }) |annotation, name| try std.testing.expectEqualStrings(name, annotation.name);
+    const providers = region.find_annotation("zigrad.kernel.provider").?.value;
+    try std.testing.expect(providers == .strings);
+    try std.testing.expectEqual(@as(usize, 2), providers.strings.len);
+    try std.testing.expectEqualStrings("first", providers.strings[0]);
+    try std.testing.expectEqualStrings("second", providers.strings[1]);
     try std.testing.expectEqual(@as(i64, 3), region.find_annotation("example.priority").?.value.integer);
     try std.testing.expectEqualSlices(u8, &.{ 0, 127, 255 }, region.find_annotation("example.payload").?.value.bytes);
     try std.testing.expectEqualSlices(u32, &.{ 4, 9 }, region.op_ids);

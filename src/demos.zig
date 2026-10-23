@@ -456,7 +456,7 @@ pub const KernelProviderDemoOptions = struct {
     entry_label: []const u8,
 
     /// Optional destination and format for PR output.
-    pr: ?zg.pr.dump.Config = null,
+    pr: ?zg.pr_dump.Config = null,
 
     /// Optional destination for the MLIR passed to PJRT.
     mlir: ?zg.output.Config = null,
@@ -586,17 +586,17 @@ pub fn run_kernel_provider_demo(
 
     var pipeline = zg.Pipeline.init(allocator);
     defer pipeline.deinit();
-    try pipeline.add(zg.pr.Validate{});
+    try pipeline.add(zg.Validate{});
     if (options.pr) |selected| {
         var config = selected;
         config.entry_label = config.entry_label orelse options.entry_label;
-        try pipeline.add(zg.pr.dump.Dump{ .config = config });
+        try pipeline.add(zg.pr_dump.Dump{ .config = config });
     }
-    try pipeline.add(zg.pr.transform.kernelize.DiscoverCandidates{
+    try pipeline.add(zg.kernelize.DiscoverCandidates{
         .providers = providers,
         .candidates = &candidates,
     });
-    try pipeline.add(zg.pr.transform.kernelize.ExtractCandidates{
+    try pipeline.add(zg.kernelize.ExtractCandidates{
         .candidates = &candidates,
         .extracted = &extracted,
     });
@@ -625,13 +625,13 @@ pub fn run_kernel_provider_demo(
         .device = execution_template.interface.device,
     });
 
-    var report: ?zg.pr.transform.kernelize.Report = if (options.kernels != null)
+    var report: ?zg.kernelize.Report = if (options.kernels != null)
         .init(allocator)
     else
         null;
     defer if (report) |*value| value.deinit();
 
-    var kernelize = zg.pr.transform.kernelize.KernelizePass{
+    var kernelize = zg.kernelize.KernelizePass{
         .store = &store,
         .candidates = &extracted,
         .device = execution_template.interface.device,
@@ -639,13 +639,13 @@ pub fn run_kernel_provider_demo(
     };
     try pipeline.add(&kernelize);
     if (report) |*value| {
-        try pipeline.add(zg.pr.transform.kernelize.DumpKernels{
+        try pipeline.add(zg.kernelize.DumpKernels{
             .report = value,
             .target = options.kernels.?,
         });
     }
 
-    try pipeline.add(zg.pr.transform.outline.Pass{});
+    try pipeline.add(zg.outline.Pass{});
     try pipeline.add(zg.mlir.stablehlo.Lower{
         .config = .{
             .encoding = if (options.mlir == null) .binary else .text,
@@ -907,7 +907,7 @@ pub fn print_tvm_kernelize_pr(
 
     try builder.push_region("tvm_fused", &.{
         zg.kernel.provider_annotation("tvm"),
-        zg.pr.transform.outline.annotation,
+        zg.pr.annotations.outline.annotation,
     });
     const sum = try mm.add(pre);
     const mul = try sum.mul(c);

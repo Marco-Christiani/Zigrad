@@ -177,7 +177,6 @@ test "zxpr with transpose shows permutation" {
 }
 
 test "zxpr kernelize region annotations" {
-    const kernel = @import("kernel");
     var program = pr.Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -188,7 +187,7 @@ test "zxpr kernelize region annotations" {
     const c = try b.param_tensor(.f32, &.{ 2, 2 });
 
     try b.push_region("tvm-kernel", &.{
-        kernel.provider_annotation("tvm"),
+        .{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } },
         .{ .name = "example.note", .value = .{ .string = "line\n\"quoted\"" } },
         .{ .name = "example.payload", .value = .{ .bytes = &.{ 0, 127, 255 } } },
     });

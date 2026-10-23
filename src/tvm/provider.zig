@@ -8,7 +8,7 @@ const pattern = @import("pr").analysis.pattern;
 
 const Cache = @import("../cache.zig").Cache;
 const device_mod = @import("device");
-const kernel = @import("kernel");
+const kernel = @import("../kernel.zig");
 const pr = @import("pr");
 const TypedPtr = @import("rtti").TypedPtr;
 const config = @import("config.zig");

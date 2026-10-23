@@ -1,36 +1,12 @@
 //! PR region outlining.
 const std = @import("std");
-const compilation = @import("compilation");
-const pr = @import("../pr.zig");
-const pattern = @import("../analysis/pattern.zig");
-const region_view = @import("../analysis/region_view.zig");
+const compilation = @import("compilation.zig");
+const pr = @import("pr");
+const pattern = pr.analysis.pattern;
+const region_view = pr.analysis.region_view;
+const marker = pr.annotations.outline;
 
 const Allocator = std.mem.Allocator;
-
-/// Region annotation requesting PR function outlining.
-pub const annotation_name = "zigrad.outline";
-
-/// Unit-valued outline request for region builders.
-pub const annotation: pr.Annotation = .{
-    .name = annotation_name,
-    .value = .unit,
-};
-
-/// Invalid payloads for the outline annotation contract.
-pub const AnnotationError = error{
-    /// The annotation value is not a supported outline request.
-    InvalidOutlineAnnotation,
-};
-
-/// Return whether a region requests outlining.
-pub fn is_requested(region: pr.Region) AnnotationError!bool {
-    const found = region.find_annotation(annotation_name) orelse return false;
-    return switch (found.value) {
-        .unit => true,
-        .boolean => |value| value,
-        else => error.InvalidOutlineAnnotation,
-    };
-}
 
 /// Configuration for outlining one region.
 pub const ApplyOptions = struct {
@@ -375,7 +351,7 @@ pub const Pass = struct {
             const remaining = try annotations_without(
                 ctx.allocator,
                 request.region.annotations,
-                annotation_name,
+                marker.annotation_name,
             );
             defer ctx.allocator.free(remaining);
 
@@ -398,11 +374,11 @@ const Request = struct {
     region: pr.Region,
 };
 
-fn find_innermost_request(program: *const pr.Program) AnnotationError!?Request {
+fn find_innermost_request(program: *const pr.Program) marker.AnnotationError!?Request {
     var found: ?Request = null;
     for (program.functions(), program.function_ids()) |func, function_id| {
         for (func.regions) |region| {
-            if (!try is_requested(region)) continue;
+            if (!try marker.is_requested(region)) continue;
             if (found == null or region.op_ids.len < found.?.region.op_ids.len) {
                 found = .{ .function_id = function_id, .region = region };
             }
@@ -608,16 +584,6 @@ fn remap_region(
     };
 }
 
-test is_requested {
-    const requested = pr.Region{
-        .id = 0,
-        .name = "requested",
-        .annotations = &.{annotation},
-        .op_ids = &.{},
-    };
-    try @import("std").testing.expect(try is_requested(requested));
-}
-
 test "apply outlines a nested region and preserves surrounding regions" {
     const testing = std.testing;
     const retained = pr.Annotation{
@@ -635,7 +601,7 @@ test "apply outlines a nested region and preserves surrounding regions" {
     const y = try builder.param_tensor(.f32, &.{ 2, 2 });
     try builder.push_region("outer", &.{.{ .name = "example.outer", .value = .unit }});
     const sum = try builder.add(x, y);
-    try builder.push_region("target", &.{ annotation, retained });
+    try builder.push_region("target", &.{ marker.annotation, retained });
     try builder.push_region("inner", &.{.{ .name = "example.inner", .value = .unit }});
     const product = try builder.multiply(sum, y);
     try builder.pop_region();
@@ -691,7 +657,7 @@ test "apply outlines a nested region and preserves surrounding regions" {
 }
 
 test "Pass consumes outline and transfers independent annotations" {
-    const kernel = @import("kernel");
+    const kernel = @import("kernel.zig");
     const testing = std.testing;
 
     var program = pr.Program.init(testing.allocator);
@@ -703,7 +669,7 @@ test "Pass consumes outline and transfers independent annotations" {
     const lhs = try builder.param_tensor(.f32, &.{ 2, 3 });
     const rhs = try builder.param_tensor(.f32, &.{ 3, 2 });
     try builder.push_region("matmul", &.{
-        annotation,
+        marker.annotation,
         .{ .name = "example.payload.v1", .value = .{ .bytes = &.{ 4, 5, 6 } } },
         kernel.provider_annotation("tvm"),
     });
@@ -717,7 +683,7 @@ test "Pass consumes outline and transfers independent annotations" {
     try testing.expectEqual(@as(usize, 2), program.functions().len);
     try testing.expectEqual(@as(usize, 0), program.functions()[0].regions.len);
     const callee = program.functions()[1];
-    try testing.expect(callee.find_annotation(annotation_name) == null);
+    try testing.expect(callee.find_annotation(marker.annotation_name) == null);
     try testing.expectEqualSlices(
         u8,
         &.{ 4, 5, 6 },
@@ -740,7 +706,7 @@ test "apply preserves multiple region outputs" {
 
     const x = try builder.param_tensor(.f32, &.{2});
     const y = try builder.param_tensor(.f32, &.{2});
-    try builder.push_region("pair", &.{annotation});
+    try builder.push_region("pair", &.{marker.annotation});
     const exponential = try builder.exp(x);
     const logarithm = try builder.log(y);
     try builder.pop_region();

@@ -591,7 +591,6 @@ test emit {
 }
 
 test "json with regions" {
-    const kernel = @import("kernel");
     var program = pr.Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -601,7 +600,7 @@ test "json with regions" {
     const a = try b.param_tensor(.f32, &.{ 2, 2 });
     const c = try b.param_tensor(.f32, &.{ 2, 2 });
 
-    try b.push_region("tvm-kernel", &.{kernel.provider_annotation("tvm")});
+    try b.push_region("tvm-kernel", &.{.{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } }});
     const add1 = try b.add(a, c);
     const add2 = try b.add(add1, c);
     try b.pop_region();

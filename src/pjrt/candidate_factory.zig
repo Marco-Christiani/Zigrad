@@ -3,7 +3,7 @@
 const std = @import("std");
 
 const device_mod = @import("device");
-const kernel = @import("kernel");
+const kernel = @import("../kernel.zig");
 const mlir = @import("../mlir.zig");
 const fingerprint = @import("pr").analysis.fingerprint;
 const pr = @import("pr");

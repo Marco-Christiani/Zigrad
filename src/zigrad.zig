@@ -7,10 +7,13 @@ const std = @import("std");
 pub const build_options = @import("build_options");
 
 pub const pr = @import("pr");
-pub const kernel = @import("kernel");
+pub const kernel = @import("kernel.zig");
 pub const device = @import("device");
 pub const dtype = @import("dtype");
-pub const compilation = @import("compilation");
+pub const compilation = @import("compilation.zig");
+pub const kernelize = @import("kernelize.zig");
+pub const outline = @import("outline.zig");
+pub const pr_dump = @import("pr_dump.zig");
 pub const toolchain = @import("toolchain.zig");
 pub const backend = @import("backend.zig");
 pub const output = @import("output");
@@ -76,8 +79,26 @@ pub const to_safetensors = utils.safetensors.to_safetensors;
 pub const FromSafetensorsOpts = utils.safetensors.Opts;
 pub const SafetensorsFile = utils.safetensors.SafeTensorsFile;
 
+/// Validates a borrowed PR program and returns it unchanged.
+pub const Validate = struct {
+    pub const Input = *pr.Program;
+    pub const Output = *pr.Program;
+
+    pub fn run(_: Validate, program: Input, _: *compilation.Context) !Output {
+        try pr.validate_program(program);
+        return program;
+    }
+};
+
 test {
     @setEvalBranchQuota(10000);
     std.testing.refAllDecls(@This());
+    std.testing.refAllDecls(kernel);
+    std.testing.refAllDecls(@import("kernel/store.zig"));
+    std.testing.refAllDecls(compilation);
+    std.testing.refAllDecls(@import("compilation/pipeline.zig"));
+    std.testing.refAllDecls(kernelize);
+    std.testing.refAllDecls(outline);
+    std.testing.refAllDecls(pr_dump);
     _ = @import("tests/higher_order_ad.zig");
 }

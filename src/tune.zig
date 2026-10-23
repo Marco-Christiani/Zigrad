@@ -14,7 +14,7 @@
 //! });
 //! defer store.deinit();
 //!
-//! var kernelize = zg.pr.transform.kernelize.KernelizePass{
+//! var kernelize = zg.kernelize.KernelizePass{
 //!     .store = &store,
 //!     .candidates = &extracted,
 //!     .device = target,
@@ -26,7 +26,7 @@ const std = @import("std");
 const device = @import("device");
 const fingerprint = @import("pr").analysis.fingerprint;
 const pr = @import("pr");
-const kernel = @import("kernel");
+const kernel = @import("kernel.zig");
 const measurement = @import("tune/measurer.zig");
 
 const log = std.log.scoped(.@"zg/tune");
@@ -90,7 +90,7 @@ pub const CollectOpts = struct {
 
 /// Compile every eligible provider implementation and retain all measurements.
 ///
-/// Every candidate must first pass through `pr.transform.kernelize.ExtractCandidates`.
+/// Every candidate must first pass through `zg.kernelize.ExtractCandidates`.
 ///
 /// Returned result borrows candidate and PR storage.
 pub fn collect(
@@ -824,12 +824,12 @@ fn discover_and_extract(
     program: *pr.Program,
     providers: []const kernel.KernelProvider,
 ) !kernel.ExtractedCandidates {
-    const kernelize = @import("pr").transform.kernelize;
+    const kernelize = @import("kernelize.zig");
     var discovered = kernel.Candidates.init(std.testing.allocator);
     defer discovered.deinit();
     var extracted = kernel.ExtractedCandidates.init(std.testing.allocator);
     errdefer extracted.deinit();
-    var context = @import("compilation").Context{
+    var context = @import("compilation.zig").Context{
         .allocator = std.testing.allocator,
         .io = std.testing.io,
     };

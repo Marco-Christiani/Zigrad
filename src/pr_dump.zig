@@ -1,9 +1,9 @@
 const std = @import("std");
 
-const compilation = @import("compilation");
+const compilation = @import("compilation.zig");
 const output = @import("output");
-const pr = @import("pr.zig");
-const zxpr = @import("zxpr.zig");
+const pr = @import("pr");
+const zxpr = pr.zxpr;
 
 pub const Target = zxpr.OutputTarget;
 pub const Spec = zxpr.DumpSpec;

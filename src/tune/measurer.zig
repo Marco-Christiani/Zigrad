@@ -4,7 +4,7 @@ const std = @import("std");
 
 const device_mod = @import("device");
 const Executor = @import("../execution.zig");
-const kernel = @import("kernel");
+const kernel = @import("../kernel.zig");
 const pr = @import("pr");
 const HostBuffer = @import("../utils.zig").HostBuffer;
 

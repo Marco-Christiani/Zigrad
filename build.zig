@@ -41,6 +41,10 @@ pub fn build(b: *std.Build) !void {
     // Emit the operation-interface coverage matrix through `@compileLog` calls.
     const emit_op_coverage = b.option(bool, "emit-op-coverage", "Emit op interface coverage at comptime (fails the build)") orelse false;
 
+    const pr_options = b.addOptions();
+    pr_options.addOption(bool, "emit_op_coverage", emit_op_coverage);
+    const pr_options_mod = pr_options.createModule();
+
     const build_options = b.addOptions();
     build_options.addOption(bool, "has_pjrt", use_pjrt);
     build_options.addOption(bool, "has_mlir", use_mlir);
@@ -50,39 +54,27 @@ pub fn build(b: *std.Build) !void {
     build_options.addOption(bool, "has_iree_embedded_elf", use_iree_embedded_elf);
     build_options.addOption(bool, "has_nvrtc", use_nvrtc);
     build_options.addOption(bool, "has_cuda_runtime", use_cuda_runtime);
-    build_options.addOption(bool, "emit_op_coverage", emit_op_coverage);
 
     const build_options_mod = build_options.createModule();
     const safetensors_zg_dep = b.dependency("safetensors_zg", .{});
-    // Each module owns its files alone. Modules import one another by name,
-    //  and pr, kernel, and compilation import each other.
+    // PR owns representation and annotations. Zigrad owns compilation,
+    //  kernelization, outlining, and dumping through one named PR instance.
     const pr_mod = b.addModule("pr", .{
         .root_source_file = b.path("src/pr.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    pr_mod.addImport("build_options", build_options_mod);
+    pr_mod.addImport("build_options", pr_options_mod);
     const pr_eval_mod = shared_module(b, "src/pr/tests/eval.zig", target, optimize);
-    const kernel_mod = shared_module(b, "src/kernel.zig", target, optimize);
-    const compilation_mod = shared_module(b, "src/compilation.zig", target, optimize);
     const device_mod = shared_module(b, "src/device.zig", target, optimize);
     const dtype_mod = shared_module(b, "src/dtype.zig", target, optimize);
     const output_mod = shared_module(b, "src/output.zig", target, optimize);
     const rtti_mod = shared_module(b, "src/utils/rtti.zig", target, optimize);
     pr_mod.addImport("pr_eval", pr_eval_mod);
-    pr_mod.addImport("kernel", kernel_mod);
-    pr_mod.addImport("compilation", compilation_mod);
-    pr_mod.addImport("device", device_mod);
     pr_mod.addImport("dtype", dtype_mod);
     pr_mod.addImport("output", output_mod);
     pr_eval_mod.addImport("pr", pr_mod);
-    kernel_mod.addImport("pr", pr_mod);
-    kernel_mod.addImport("device", device_mod);
-    kernel_mod.addImport("dtype", dtype_mod);
-    kernel_mod.addImport("rtti", rtti_mod);
-    compilation_mod.addImport("device", device_mod);
-    compilation_mod.addImport("rtti", rtti_mod);
 
     const adversarial_allocator_mod = b.createModule(.{
         .root_source_file = b.path("src/tests/adversarial_allocator.zig"),
@@ -97,8 +89,6 @@ pub fn build(b: *std.Build) !void {
     zigrad_mod.addImport("build_options", build_options_mod);
     zigrad_mod.addImport("pr", pr_mod);
     zigrad_mod.addImport("pr_eval", pr_eval_mod);
-    zigrad_mod.addImport("kernel", kernel_mod);
-    zigrad_mod.addImport("compilation", compilation_mod);
     zigrad_mod.addImport("device", device_mod);
     zigrad_mod.addImport("dtype", dtype_mod);
     zigrad_mod.addImport("output", output_mod);
@@ -294,6 +284,7 @@ pub fn build(b: *std.Build) !void {
         });
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
+    run_lib_tests.has_side_effects = true;
     const cli_tests = b.addTest(.{
         .name = "zigrad-cli-tests",
         .root_module = b.createModule(.{
@@ -315,6 +306,7 @@ pub fn build(b: *std.Build) !void {
             .cuda = use_cuda_runtime,
         });
     const run_cli_tests = b.addRunArtifact(cli_tests);
+    run_cli_tests.has_side_effects = true;
 
     const pr_seam_tests = b.addTest(.{
         .name = "pr-seam-tests",
@@ -338,6 +330,7 @@ pub fn build(b: *std.Build) !void {
             .cuda = use_cuda_runtime,
         });
     const run_pr_seam_tests = b.addRunArtifact(pr_seam_tests);
+    run_pr_seam_tests.has_side_effects = true;
     b.step("pr-seam", "Check that zigrad and pr share one program representation")
         .dependOn(&run_pr_seam_tests.step);
 
@@ -376,29 +369,28 @@ pub fn build(b: *std.Build) !void {
     const shared_test_modules = [_]struct { name: []const u8, module: *std.Build.Module }{
         .{ .name = "pr-tests", .module = pr_mod },
         .{ .name = "pr-eval-tests", .module = pr_eval_mod },
-        .{ .name = "kernel-tests", .module = kernel_mod },
-        .{ .name = "compilation-tests", .module = compilation_mod },
         .{ .name = "device-tests", .module = device_mod },
         .{ .name = "dtype-tests", .module = dtype_mod },
         .{ .name = "output-tests", .module = output_mod },
         .{ .name = "rtti-tests", .module = rtti_mod },
     };
     const test_compile_step = b.step("test-compile", "Build unit tests without running");
+    const pr_test_compile_step = b.step("pr-test-compile", "Build the standalone PR tests");
+    const pr_test_step = b.step("pr-test", "Run the standalone PR tests");
     for (shared_test_modules) |entry| {
         const tests = b.addTest(.{
             .name = entry.name,
             .root_module = entry.module,
             .filters = test_filters,
         });
-        if (use_mlir) link_mlir_stablehlo_capi(tests, sdk_lib.?);
-        if (has_external_integration)
-            add_runtime_bundle(b, tests, .{
-                .runtime_root = runtime_root_opt orelse sdk_runtime.?,
-                .install_runtime_link = install_runtime_link,
-                .cuda = use_cuda_runtime,
-            });
-        test_step.dependOn(&b.addRunArtifact(tests).step);
+        const run_tests = b.addRunArtifact(tests);
+        run_tests.has_side_effects = true;
+        test_step.dependOn(&run_tests.step);
         test_compile_step.dependOn(&b.addInstallArtifact(tests, .{}).step);
+        if (entry.module == pr_mod) {
+            pr_test_compile_step.dependOn(&tests.step);
+            pr_test_step.dependOn(&run_tests.step);
+        }
     }
 
     const install_lib_tests = b.addInstallArtifact(lib_tests, .{});
@@ -473,8 +465,8 @@ pub fn build(b: *std.Build) !void {
     }
 }
 
-/// Create a module rooted at one file of the shared program-representation
-///  graph. Callers add its imports after all modules exist.
+/// Create a module that owns its source files independently.
+///  Callers add its imports after all modules exist.
 fn shared_module(
     b: *std.Build,
     root: []const u8,

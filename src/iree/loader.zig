@@ -135,7 +135,7 @@ test "Loader keeps the compiled allocation until program release" {
     defer testing.allocator.free(executable);
 
     var compiler_instance: compiler.Compiler = .{ .config = config };
-    var context: @import("compilation").Context = .{ .allocator = gpa, .io = testing.io };
+    var context: @import("../compilation.zig").Context = .{ .allocator = gpa, .io = testing.io };
     const source = try testing.allocator.dupe(u8, add_module);
     defer testing.allocator.free(source);
     var artifact = compiler_instance.interface.run(

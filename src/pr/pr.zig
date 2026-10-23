@@ -2258,7 +2258,6 @@ test "Literal.from_f64 tags by DType" {
 }
 
 test "region push/pop materializes regions" {
-    const kernel = @import("kernel");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -2268,7 +2267,7 @@ test "region push/pop materializes regions" {
     const a_id = try b.param_tensor(.f32, &.{ 2, 2 });
     const c_id = try b.param_tensor(.f32, &.{ 2, 2 });
 
-    try b.push_region("tvm-kernel", &.{kernel.provider_annotation("tvm")});
+    try b.push_region("tvm-kernel", &.{.{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } }});
     const d = try b.add(a_id, c_id);
     const e = try b.multiply(d, c_id);
     try b.pop_region();
@@ -2279,10 +2278,9 @@ test "region push/pop materializes regions" {
     try std.testing.expectEqual(@as(usize, 1), func.regions.len);
     try std.testing.expectEqual(@as(u32, 0), func.regions[0].id);
     try std.testing.expectEqualStrings("tvm-kernel", func.regions[0].name);
-    try std.testing.expectEqualStrings(
-        "tvm",
-        (try kernel.requested_providers(func.regions[0].annotations)).?.at(0),
-    );
+    const provider = func.regions[0].find_annotation("zigrad.kernel.provider").?;
+    try std.testing.expect(provider.value == .string);
+    try std.testing.expectEqualStrings("tvm", provider.value.string);
     try std.testing.expectEqualSlices(u32, &.{ 0, 1 }, func.regions[0].op_ids);
 }
 
@@ -2325,8 +2323,7 @@ test "region annotation names are unique" {
 }
 
 test "nested regions" {
-    const kernel = @import("kernel");
-    const outline = @import("transform/outline.zig");
+    const outline = @import("annotations.zig").outline;
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -2336,7 +2333,7 @@ test "nested regions" {
     const a_id = try b.param_tensor(.f32, &.{ 2, 2 });
     const c_id = try b.param_tensor(.f32, &.{ 2, 2 });
 
-    try b.push_region("outer", &.{kernel.provider_annotation("tvm")});
+    try b.push_region("outer", &.{.{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } }});
     const d = try b.add(a_id, c_id);
     {
         try b.push_region("inner", &.{outline.annotation});
@@ -2350,24 +2347,22 @@ test "nested regions" {
     const func = try b.finish(.{ .returns = &.{f} });
 
     try std.testing.expectEqual(@as(usize, 2), func.regions.len);
-    // Inner region completed first
+    // inner region completes first
     try std.testing.expectEqual(@as(u32, 1), func.regions[0].id);
     try std.testing.expectEqualStrings("inner", func.regions[0].name);
     try std.testing.expect(try outline.is_requested(func.regions[0]));
     try std.testing.expectEqualSlices(u32, &.{1}, func.regions[0].op_ids);
-    // Outer region completed second
+    // outer region completes second
     try std.testing.expectEqual(@as(u32, 0), func.regions[1].id);
     try std.testing.expectEqualStrings("outer", func.regions[1].name);
-    try std.testing.expectEqualStrings(
-        "tvm",
-        (try kernel.requested_providers(func.regions[1].annotations)).?.at(0),
-    );
+    const provider = func.regions[1].find_annotation("zigrad.kernel.provider").?;
+    try std.testing.expect(provider.value == .string);
+    try std.testing.expectEqualStrings("tvm", provider.value.string);
     try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2 }, func.regions[1].op_ids);
 }
 
 test "regions_matching filters by predicate" {
-    const kernel = @import("kernel");
-    const outline = @import("transform/outline.zig");
+    const outline = @import("annotations.zig").outline;
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -2377,7 +2372,7 @@ test "regions_matching filters by predicate" {
     const a_id = try b.param_tensor(.f32, &.{ 2, 2 });
     const c_id = try b.param_tensor(.f32, &.{ 2, 2 });
 
-    try b.push_region("r1", &.{kernel.provider_annotation("tvm")});
+    try b.push_region("r1", &.{.{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } }});
     const d = try b.add(a_id, c_id);
     try b.pop_region();
 
@@ -2389,7 +2384,7 @@ test "regions_matching filters by predicate" {
 
     const is_kernelized = struct {
         fn f(region: Region) bool {
-            return (kernel.requested_providers(region.annotations) catch null) != null;
+            return region.find_annotation("zigrad.kernel.provider") != null;
         }
     }.f;
 
@@ -2400,7 +2395,6 @@ test "regions_matching filters by predicate" {
 }
 
 test "empty region not materialized" {
-    const kernel = @import("kernel");
     var program = Program.init(std.testing.allocator);
     defer program.deinit();
 
@@ -2410,7 +2404,7 @@ test "empty region not materialized" {
     const a_id = try b.param_tensor(.f32, &.{ 2, 2 });
     const c_id = try b.param_tensor(.f32, &.{ 2, 2 });
 
-    try b.push_region("empty", &.{kernel.provider_annotation("tvm")});
+    try b.push_region("empty", &.{.{ .name = "zigrad.kernel.provider", .value = .{ .string = "tvm" } }});
     try b.pop_region();
 
     const d = try b.add(a_id, c_id);

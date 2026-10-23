@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-const compilation = @import("compilation");
+const compilation = @import("compilation.zig");
 const Executor = @import("execution.zig");
 
 /// Failures exposed by terminal compilation, loading, and execution.

@@ -7,11 +7,11 @@
 //!  integration code and focused tests.
 const std = @import("std");
 
-const compilation = @import("compilation");
+const compilation = @import("../../compilation.zig");
 const pr = @import("pr");
 const fingerprint = @import("pr").analysis.fingerprint;
-const kernelize = @import("pr").transform.kernelize;
-const outline = @import("pr").transform.outline;
+const kernelize = @import("../../kernelize.zig");
+const outline = @import("../../outline.zig");
 const mlir = @import("../../c/mlir/mlir.zig");
 const stablehlo = @import("../../c/mlir/dialects/stablehlo.zig");
 const MlirSession = @import("../session.zig").Session;
@@ -579,7 +579,7 @@ pub fn lower(
 
 // Tests.
 
-const kernel_test = @import("kernel");
+const kernel_test = @import("../../kernel.zig");
 
 fn outline_kernel_requests_for_test(program: *pr.Program) !kernel_test.ExtractedCandidates {
     const Provider = struct {
@@ -877,7 +877,7 @@ test "lowering can outline via region annotation" {
 
     const a = try b.param_tensor(.f32, &.{ 2, 3 });
     const c = try b.param_tensor(.f32, &.{ 3, 2 });
-    try b.push_region("outlined-mm", &.{outline.annotation});
+    try b.push_region("outlined-mm", &.{pr.annotations.outline.annotation});
     const d = try b.mm(a, c);
     try b.pop_region();
     const func = try b.finish(.{ .returns = &.{d} });

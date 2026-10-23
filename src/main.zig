@@ -61,7 +61,7 @@ fn tvm_surface_for_command(command: cli.Command) zg.tvm.runtime.Surface {
 }
 
 const OutputOptions = struct {
-    pr: ?zg.pr.dump.Config,
+    pr: ?zg.pr_dump.Config,
     mlir: ?zg.output.Config,
     optimized_hlo: ?zg.output.Config,
     kernels: ?zg.output.Config,
@@ -515,11 +515,11 @@ fn add_mlir_input(
     pipeline: *zg.Pipeline,
     outputs: OutputOptions,
 ) !void {
-    try pipeline.add(zg.pr.Validate{});
+    try pipeline.add(zg.Validate{});
     if (outputs.pr) |config| {
-        try pipeline.add(zg.pr.dump.Dump{ .config = config });
+        try pipeline.add(zg.pr_dump.Dump{ .config = config });
     }
-    try pipeline.add(zg.pr.transform.outline.Pass{});
+    try pipeline.add(zg.outline.Pass{});
     try pipeline.add(zg.mlir.stablehlo.Lower{
         .config = .{
             .encoding = if (outputs.mlir == null) .binary else .text,

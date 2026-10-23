@@ -1,7 +1,7 @@
 //! Serialized StableHLO artifacts and output operations.
 
 const std = @import("std");
-const compilation = @import("compilation");
+const compilation = @import("compilation.zig");
 const output = @import("output");
 
 /// Backend-configuration field carrying an opaque PR custom-call payload.

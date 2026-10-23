@@ -3,7 +3,7 @@
 const std = @import("std");
 
 const device = @import("device");
-const kernel = @import("kernel");
+const kernel = @import("../kernel.zig");
 const stablehlo = @import("../stablehlo.zig");
 const pjrt_api = @import("../c/pjrt/api.zig");
 const c = @import("../c/pjrt/c.zig").c;

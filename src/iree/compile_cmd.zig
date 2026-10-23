@@ -20,7 +20,7 @@ pub const Options = struct {
     compiler_arguments: []const []const u8 = &.{},
 
     /// Optional destination and format for PR output.
-    pr: ?zg.pr.dump.Config = null,
+    pr: ?zg.pr_dump.Config = null,
 
     /// Optional destination for the MLIR passed to IREE.
     mlir: ?zg.output.Config = null,
@@ -58,13 +58,13 @@ pub fn run(
     var compiler = zg.iree.Compiler{ .config = config.compiler };
     var pipeline = zg.Pipeline.init(allocator);
     defer pipeline.deinit();
-    try pipeline.add(zg.pr.Validate{});
+    try pipeline.add(zg.Validate{});
     if (opts.pr) |selected| {
         var output_config = selected;
         output_config.entry_label = output_config.entry_label orelse entry_label;
-        try pipeline.add(zg.pr.dump.Dump{ .config = output_config });
+        try pipeline.add(zg.pr_dump.Dump{ .config = output_config });
     }
-    try pipeline.add(zg.pr.transform.outline.Pass{});
+    try pipeline.add(zg.outline.Pass{});
     try pipeline.add(zg.mlir.stablehlo.Lower{
         .config = .{
             .encoding = if (opts.mlir == null) .binary else .text,

@@ -1,7 +1,6 @@
 //! PR program representation and operations.
 
 const core = @import("pr/pr.zig");
-const compilation = @import("compilation");
 
 pub const DType = core.DType;
 pub const Shape = core.Shape;
@@ -54,17 +53,6 @@ pub const ValidationError = core.ValidationError;
 pub const validate_function = core.validate_function;
 pub const validate_program = core.validate_program;
 
-/// Validates a borrowed PR program and returns it unchanged.
-pub const Validate = struct {
-    pub const Input = *Program;
-    pub const Output = *Program;
-
-    pub fn run(_: Validate, program: Input, _: *compilation.Context) !Output {
-        try validate_program(program);
-        return program;
-    }
-};
-
 pub const BuildError = core.BuildError;
 pub const FunctionBuilder = core.FunctionBuilder;
 
@@ -73,17 +61,16 @@ pub const json = @import("pr/json.zig");
 pub const serialize = @import("pr/serialize.zig");
 pub const tool = @import("pr/tool.zig");
 pub const zxpr = @import("pr/zxpr.zig");
-pub const dump = @import("pr/dump.zig");
+pub const annotations = @import("pr/annotations.zig");
 pub const ops = @import("pr/ops/ops.zig");
 pub const analysis = @import("pr/analysis.zig");
 
 pub const transform = struct {
     pub const annotate = @import("pr/transform/annotate.zig");
-    pub const kernelize = @import("pr/transform/kernelize.zig");
-    pub const outline = @import("pr/transform/outline.zig");
 };
 
 test {
     @import("std").testing.refAllDecls(@This());
-    _ = transform.kernelize;
+    @import("std").testing.refAllDecls(transform.annotate);
+    @import("std").testing.refAllDecls(annotations.outline);
 }
