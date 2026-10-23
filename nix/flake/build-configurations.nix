@@ -437,8 +437,8 @@
       }
       // lib.optionalAttrs (has "nvrtc") {
         CUDA_HOME = "${parts.cudaToolkit}";
-        NIX_GLIBC_INCLUDE = "${pkgs.stdenv.cc.libc.dev}/include";
-        NIX_GCC_INCLUDE = "${pkgs.stdenv.cc.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${lib.getVersion pkgs.stdenv.cc.cc}/include";
+        NIX_GLIBC_INCLUDE = "${parts.cudaToolkit.gccHost.libc.dev}/include";
+        NIX_GCC_INCLUDE = "${parts.cudaToolkit.gccHost.cc}/lib/gcc/${pkgs.stdenv.hostPlatform.config}/${lib.getVersion parts.cudaToolkit.gccHost.cc}/include";
       }
       // lib.optionalAttrs (has "mirage-cuda") {
         ZG_EXTERNAL_SDK_ROOT = "${externalInputs.combined}";

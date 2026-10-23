@@ -79,7 +79,6 @@
 
     # Shared CUDA package and target configuration.
     cudaCfg = {
-      gccHostAttr = "gcc14";
       cudaPackagesAttr = "cudaPackages_12_9";
       cudaVersion = "12.9.1";
       cudnnVersion = "9.8.0";
@@ -146,6 +145,11 @@
           config = {
             allowUnfreePredicate = package:
               builtins.elem (inputs.nixpkgs.lib.getName package) [
+                "cuda_nvcc"
+                "cuda_cudart"
+                "cuda_cccl"
+                "cuda_nvrtc"
+                "libnvjitlink"
                 "nsight_compute"
                 "nsight_systems"
               ];

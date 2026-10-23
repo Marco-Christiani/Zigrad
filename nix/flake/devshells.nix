@@ -11,7 +11,8 @@
     buildConfigurations = config.zigrad.resolvedConfigurations;
     externalSources = import ../external-sources.nix {inherit pkgs;};
     cudaPackages = pkgs.${cudaCfg.cudaPackagesAttr};
-    gccHost = pkgs.${cudaCfg.gccHostAttr};
+    cuda = import ./integrations/cuda.nix {inherit pkgs cudaCfg;};
+    gccHost = cuda.gccHost;
 
     # Wrap clangd so it trusts Nix-store gcc/clang wrappers as drivers.
     # Without --query-driver, clangd refuses to query the compiler used in
@@ -35,6 +36,7 @@
       patchelf
       git
       gccHost
+      cuda.cudaToolkit
       clang
       cmake
       ninja

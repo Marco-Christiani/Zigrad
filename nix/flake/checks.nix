@@ -3,8 +3,13 @@
   perSystem = {
     pkgs,
     config,
+    cudaCfg,
     ...
   }: let
+    cuda = import ./integrations/cuda.nix {inherit pkgs cudaCfg;};
+    cudaToolkitCheck = pkgs.callPackage ../packages/cuda-toolkit-check.nix {
+      inherit (cuda) cudaToolkit;
+    };
     zigrad = config.packages.zigrad;
     zigradXlaCpu = config.packages."xla:cpu";
     zigradIreeCpu = config.packages."iree:cpu";
@@ -136,6 +141,7 @@
   in {
     checks =
       {
+        cuda-toolkit = cudaToolkitCheck;
         zigrad = zigrad;
         zigrad-build-cli = config.packages.zigrad-build;
         zigrad-autodoc = config.packages.zigrad-autodoc;
