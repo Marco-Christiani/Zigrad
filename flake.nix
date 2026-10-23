@@ -116,9 +116,11 @@
 
       flake = {
         overlays.default = zigOverlay;
-        lib = (import ./nix/lib/consumer.nix {
-          zigradSrc = ./.;
-        }) // {inherit zigVersion;};
+        lib =
+          (import ./nix/lib/consumer.nix {
+            zigradSrc = ./.;
+          })
+          // {inherit zigVersion;};
         templates.mnist = {
           path = ./examples/mnist;
           description = "Zigrad MNIST application with interchangeable CPU backends";
