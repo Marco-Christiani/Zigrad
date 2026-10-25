@@ -39,7 +39,7 @@ This tree contains an ML framework built on several external integrations while 
 
 The repository defines three build-facing surfaces:
 
-1. The Zig source package exports the `zigrad` module. The core has no external compiler or runtime integrations.
+1. The Zig source package exports the `zigrad` module, which supports integration-free tracing. To assemble `zg.compile`, request `zc-cpu=true` from the dependency and add the `zc`, `zcf`, and `zc_implementation_manifest` imports to its `zigrad` module. Build those imports over the dependency's `pr` module. A program calls `zg.compile(func, allocator, io, specs, .{})` and then `callable.call(.{...})`. A call with the capability disabled reports `zg.compile requires the assembled ZC CPU capability` at compile time. ZCF's `examples/zg/compile_cpu` is the maintained consumer.
 2. Nix packages install the `zigrad` CLI. Named configurations (see below) build that CLI with a set of integrations and provide the runtime environment needed to execute it.
 3. Devshells expose a broad composition of external compile and runtime inputs for iteration purposes.
 

@@ -15,6 +15,7 @@ pub fn build(b: *std.Build) !void {
     // External input contents validate selected features without selecting them.
     const use_pjrt = b.option(bool, "pjrt", "Enable PJRT backend support") orelse false;
     const use_mlir = b.option(bool, "mlir", "Enable MLIR/StableHLO lowering") orelse false;
+    const use_zc_cpu = b.option(bool, "zc-cpu", "Enable zg.compile with consumer-supplied zc, zcf, and zc_implementation_manifest imports on zigrad") orelse false;
     const use_tvm = b.option(bool, "tvm", "Enable the TVM kernel provider") orelse false;
     const use_mirage = b.option(bool, "mirage", "Enable the Mirage-backed kernel provider") orelse false;
     const use_iree = b.option(bool, "iree", "Enable the IREE integration") orelse false;
@@ -46,6 +47,7 @@ pub fn build(b: *std.Build) !void {
     const pr_options_mod = pr_options.createModule();
 
     const build_options = b.addOptions();
+    build_options.addOption(bool, "has_zc_cpu", use_zc_cpu);
     build_options.addOption(bool, "has_pjrt", use_pjrt);
     build_options.addOption(bool, "has_mlir", use_mlir);
     build_options.addOption(bool, "has_tvm", use_tvm);
@@ -338,6 +340,28 @@ pub fn build(b: *std.Build) !void {
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_cli_tests.step);
     test_step.dependOn(&run_pr_seam_tests.step);
+
+    if (!use_zc_cpu) {
+        const probe_source = b.addWriteFiles().add("zg_compile_disabled_probe.zig",
+            \\const std = @import("std");
+            \\const zg = @import("zigrad");
+            \\fn identity(value: zg.Tensor) zg.Tensor { return value; }
+            \\test "compile requires CPU assembly" {
+            \\    _ = try zg.compile(identity, std.testing.allocator, std.testing.io, .{zg.Tensor.abstract(.f32, &.{1})}, .{});
+            \\}
+        );
+        const probe = b.addTest(.{
+            .name = "zg-compile-disabled-probe",
+            .root_module = b.createModule(.{
+                .root_source_file = probe_source,
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "zigrad", .module = zigrad_mod }},
+            }),
+        });
+        probe.expect_errors = .{ .exact = &.{":?:?: error: zg.compile requires the assembled ZC CPU capability"} };
+        test_step.dependOn(&probe.step);
+    }
 
     if (use_iree) {
         // Runs with its own log root because the failure paths under test log

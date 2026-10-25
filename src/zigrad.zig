@@ -71,6 +71,42 @@ const trace_mod = @import("trace.zig");
 pub const trace = trace_mod.trace;
 pub const trace_into = trace_mod.trace_into;
 pub const TraceOptions = trace_mod.Options;
+const compile_impl = if (build_options.has_zc_cpu) @import("compile.zig") else struct {};
+
+/// Options for tracing the function supplied to `compile`.
+pub const CompileOpts = struct {
+    /// Trace name and tracing behavior for the authored function.
+    trace: TraceOptions = .{},
+};
+
+/// Callable produced by the assembled ZC CPU capability. See `zg.compile` for
+///  ownership, borrowing, serialization, and result lifetimes.
+///  This type is empty when `zc-cpu` is disabled.
+pub const CompileCallable = if (build_options.has_zc_cpu) compile_impl.Callable else struct {};
+
+/// Traces a flat Tensor signature and prepares its terminal CPU Product.
+///
+/// Requires `zc-cpu` and consumer-supplied `zc`, `zcf`, and
+///  `zc_implementation_manifest` imports over this module's PR instance.
+///  The returned callable owns all retained resources. Its allocator and I/O
+///  service are borrowed until `deinit`, and inputs are borrowed during each call.
+///  Calls, repeated demands, and teardown require external serialization.
+///  Each result owns separate host storage and may outlive the callable while
+///  its allocator remains alive. Initialization errors release partial ownership.
+///  Unsupported, open, conflicted, unfinished, and callback-failed Runs return
+///  an unprepared callable whose `inspect` method exposes the retained evidence.
+///
+/// The default installs `default_formation`, disables tree and tensor-plan
+///  formations, and uses `.reference_required` source association. It requests
+///  the baseline x86-64 SysV callable family with default ports and empty donation
+///  permissions, matches compatibly, and retains a `catalog_closed` Run.
+///  Numerical Contracts use `Profile.exact_scalar` and per-input executable offers.
+pub fn compile(comptime func: anytype, allocator: std.mem.Allocator, io: std.Io, specs: anytype, comptime opts: CompileOpts) !*CompileCallable {
+    if (comptime !build_options.has_zc_cpu)
+        @compileError("zg.compile requires the assembled ZC CPU capability");
+    return compile_impl.compile(func, allocator, io, specs, opts.trace);
+}
+
 pub const grad = transforms.make_grad;
 pub const value_and_grad = transforms.make_value_and_grad;
 
@@ -79,7 +115,7 @@ pub const to_safetensors = utils.safetensors.to_safetensors;
 pub const FromSafetensorsOpts = utils.safetensors.Opts;
 pub const SafetensorsFile = utils.safetensors.SafeTensorsFile;
 
-/// Validates a borrowed PR program and returns it unchanged.
+/// Validates and returns the borrowed PR program.
 pub const Validate = struct {
     pub const Input = *pr.Program;
     pub const Output = *pr.Program;
@@ -101,4 +137,5 @@ test {
     std.testing.refAllDecls(outline);
     std.testing.refAllDecls(pr_dump);
     _ = @import("tests/higher_order_ad.zig");
+    if (build_options.has_zc_cpu) _ = @import("compile.zig");
 }
