@@ -28,7 +28,7 @@ fn signature_supported(comptime func: anytype, comptime Specs: type) bool {
     if (tuple != .@"struct" or !tuple.@"struct".is_tuple) return false;
     const fields = tuple.@"struct".field_types;
     if (fields.len != f.param_types.len) return false;
-    for (fields, f.param_types) |field, param| {
+    inline for (fields, f.param_types) |field, param| {
         if (field != Tensor or param != Tensor) return false;
     }
     const result = f.return_type orelse return false;
@@ -291,7 +291,7 @@ pub const Callable = struct {
 fn tensor_tuple(comptime T: type) bool {
     const info = @typeInfo(T);
     if (info != .@"struct" or !info.@"struct".is_tuple) return false;
-    for (info.@"struct".field_types) |field| if (field != Tensor) return false;
+    inline for (info.@"struct".field_types) |field| if (field != Tensor) return false;
     return true;
 }
 
@@ -718,7 +718,7 @@ fn assert_numerical_records(view: anytype) !void {
         try std.testing.expectEqualStrings(zc.kernel.program.requirement.exact_scalar_semantics_name, symbol.name);
     }
     try std.testing.expect(found_semantics);
-    const terminal_offers = q.checked(Cat, .{
+    const terminal_offers = comptime q.checked(Cat, .{
         .param_count = 2,
         .query = .{
             .var_count = 2,
@@ -729,7 +729,7 @@ fn assert_numerical_records(view: anytype) !void {
             .project = &.{q.v(1)},
         },
     });
-    const product_derivations = q.checked(Cat, .{
+    const product_derivations = comptime q.checked(Cat, .{
         .param_count = 1,
         .query = .{
             .var_count = 1,
