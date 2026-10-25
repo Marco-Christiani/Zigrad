@@ -648,10 +648,10 @@ test signature_supported {
     try std.testing.expect(!signature_supported(non_tensor, @TypeOf(.{@as(i32, 0)})));
     try std.testing.expect(!signature_supported(multiple, @TypeOf(.{test_specs(.f32)[0]})));
     try std.testing.expect(!signature_supported(generic, @TypeOf(.{test_specs(.f32)[0]})));
-    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ nested, allocator, io, .{.{ .a = test_specs(.f32)[0] }}, .{} });
-    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ non_tensor, allocator, io, .{@as(i32, 0)}, .{} });
-    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ multiple, allocator, io, .{test_specs(.f32)[0]}, .{} });
-    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ generic, allocator, io, .{test_specs(.f32)[0]}, .{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ nested, allocator, io, .{.{ .a = test_specs(.f32)[0] }}, comptime trace.Options{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ non_tensor, allocator, io, .{@as(i32, 0)}, comptime trace.Options{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ multiple, allocator, io, .{test_specs(.f32)[0]}, comptime trace.Options{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ generic, allocator, io, .{test_specs(.f32)[0]}, comptime trace.Options{} });
 }
 
 test "Callable.inspect keeps the native image, mapping, and entry across two calls" {
