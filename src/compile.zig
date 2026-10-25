@@ -13,6 +13,43 @@ const implementation_manifest = @import("zc_implementation_manifest");
 const Id = zc.schema.Id;
 const standard = zc.x86_64.installation;
 const Buffer = zc.x86_64.execute.Buffer;
+const log = std.log.scoped(.@"zg/compile");
+
+fn validation_error(err: anyerror, comptime context: []const u8) anyerror {
+    if (comptime builtin.is_test) {
+        if (TestDiagnostics.expected) |*expected| {
+            if (err == expected.cause and std.mem.eql(u8, context, expected.context)) {
+                expected.count += 1;
+                return err;
+            }
+        }
+    }
+    log.err("{s}: {s}", .{ context, @errorName(err) });
+    return err;
+}
+
+const TestDiagnostics = if (builtin.is_test) struct {
+    const Expected = struct {
+        cause: anyerror,
+        context: []const u8,
+        count: usize = 0,
+    };
+    threadlocal var expected: ?Expected = null;
+} else struct {};
+
+fn expect_validation_error(
+    comptime cause: anyerror,
+    comptime context: []const u8,
+    comptime operation: anytype,
+    args: anytype,
+) !void {
+    std.debug.assert(TestDiagnostics.expected == null);
+    TestDiagnostics.expected = .{ .cause = cause, .context = context };
+    defer TestDiagnostics.expected = null;
+    try std.testing.expectError(cause, @call(.auto, operation, args));
+    try std.testing.expectEqual(@as(usize, 1), TestDiagnostics.expected.?.count);
+}
+
 /// Checks the execution target before tracing or creating a workspace.
 fn host_admitted(os: std.Target.Os.Tag, arch: std.Target.Cpu.Arch) bool {
     return os == .linux and arch == .x86_64;
@@ -43,10 +80,10 @@ const Descriptor = struct {
     byte_count: usize,
 
     fn init(dtype: pr.DType, dims: []const i64) !Descriptor {
-        if (dims.len > Tensor.max_rank) return error.UnsupportedRank;
+        if (dims.len > Tensor.max_rank) return validation_error(error.UnsupportedRank, "source rank exceeds Tensor capacity");
         var count: usize = 1;
         for (dims) |dim| {
-            const size = std.math.cast(usize, dim) orelse return error.InvalidShape;
+            const size = std.math.cast(usize, dim) orelse return validation_error(error.InvalidShape, "source dimension must fit usize");
             count = try std.math.mul(usize, count, size);
         }
         return .{
@@ -63,19 +100,19 @@ const Descriptor = struct {
 
     /// Checks both metadata layers before obtaining a byte view.
     fn input_bytes(self: Descriptor, tensor: Tensor) ![]const u8 {
-        if (tensor.dtype != self.dtype) return error.DTypeMismatch;
-        if (tensor.shape.len > Tensor.max_rank) return error.ShapeMismatch;
+        if (tensor.dtype != self.dtype) return validation_error(error.DTypeMismatch, "call input dtype disagrees with compiled descriptor");
+        if (tensor.shape.len > Tensor.max_rank) return validation_error(error.ShapeMismatch, "call input shape disagrees with compiled descriptor");
         if (!std.mem.eql(i64, tensor.shape.const_slice(), self.shape.const_slice()))
-            return error.ShapeMismatch;
+            return validation_error(error.ShapeMismatch, "call input shape disagrees with compiled descriptor");
         const host = switch (tensor.backing) {
             .host => |host| host,
-            .abstract, .device, .traced => return error.UnsupportedBacking,
+            .abstract, .device, .traced => return validation_error(error.UnsupportedBacking, "call input requires host backing"),
         };
         if (host.shape.len > Tensor.max_rank or host.dtype != tensor.dtype or
             !std.mem.eql(i64, host.shape.const_slice(), tensor.shape.const_slice()))
-            return error.HostMetadataMismatch;
+            return validation_error(error.HostMetadataMismatch, "call input host metadata disagrees with Tensor metadata");
         const bytes = host.data();
-        if (bytes.len < self.byte_count) return error.BufferTooSmall;
+        if (bytes.len < self.byte_count) return validation_error(error.BufferTooSmall, "call input capacity is below the compiled byte count");
         return bytes[0..self.byte_count];
     }
 };
@@ -86,7 +123,7 @@ const Storage = struct {
     bytes: []u8,
 
     fn init(allocator: std.mem.Allocator, size: usize, alignment: usize) !Storage {
-        if (alignment == 0 or !std.math.isPowerOfTwo(alignment)) return error.InvalidAlignment;
+        if (alignment == 0 or !std.math.isPowerOfTwo(alignment)) return validation_error(error.InvalidAlignment, "external binding alignment must be a representable power of two");
         const raw = try allocator.alloc(u8, try std.math.add(usize, size, alignment - 1));
         const offset = std.mem.alignForward(usize, @intFromPtr(raw.ptr), alignment) - @intFromPtr(raw.ptr);
         return .{ .raw = raw, .bytes = raw[offset..][0..size] };
@@ -99,32 +136,80 @@ const Storage = struct {
 
 /// Owns the writable copies passed through the native byte boundary.
 const Bindings = struct {
-    inputs: []Storage,
-    views: []Buffer,
-    output: Storage,
+    storage: []?Storage,
+    inputs: []Buffer,
+    output: Buffer,
 
     fn init(allocator: std.mem.Allocator, image: *const zc.x86_64.artifact.Image, inputs: []const Descriptor, output: Descriptor) !Bindings {
-        if (image.input_count != inputs.len or image.output_count != 1) return error.InterfaceMismatch;
-        const storage = try allocator.alloc(Storage, inputs.len);
-        errdefer allocator.free(storage);
-        var count: usize = 0;
-        errdefer for (storage[0..count]) |item| item.deinit(allocator);
+        if (image.input_count != inputs.len or image.output_count != 1) return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
+        const node_count = inputs.len + 1;
+        const parents = try allocator.alloc(usize, node_count);
+        defer allocator.free(parents);
+        for (parents, 0..) |*parent, node| parent.* = node;
+        for (image.buffers) |buffer| switch (buffer.storage) {
+            .allocation => {},
+            .external => |external| {
+                var anchor: ?usize = null;
+                for (external.inputs) |position| {
+                    if (position >= inputs.len) return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
+                    merge(parents, &anchor, position);
+                }
+                for (external.outputs) |position| {
+                    if (position != 0) return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
+                    merge(parents, &anchor, inputs.len);
+                }
+            },
+        };
+        const storage = try allocator.alloc(?Storage, node_count);
+        @memset(storage, null);
+        errdefer {
+            for (storage) |item| if (item) |owned| owned.deinit(allocator);
+            allocator.free(storage);
+        }
         const views = try allocator.alloc(Buffer, inputs.len);
         errdefer allocator.free(views);
-        for (inputs, storage, views, 0..) |descriptor, *item, *view, position| {
-            item.* = try Storage.init(allocator, descriptor.byte_count, try external_alignment(image, .input, position, descriptor.byte_count));
-            count += 1;
-            view.* = .{ .bytes = item.bytes };
+        // each equivalence class owns one allocation and exposes identical views
+        for (0..node_count) |root| {
+            if (find(parents, root) != root) continue;
+            var capacity: usize = 0;
+            var alignment: usize = 1;
+            for (0..node_count) |node| {
+                if (find(parents, node) != root) continue;
+                const descriptor = if (node < inputs.len) inputs[node] else output;
+                const required_alignment = if (node < inputs.len)
+                    try external_alignment(image, .input, node, descriptor.byte_count)
+                else
+                    try external_alignment(image, .output, 0, descriptor.byte_count);
+                capacity = @max(capacity, descriptor.byte_count);
+                alignment = @max(alignment, required_alignment);
+            }
+            storage[root] = try Storage.init(allocator, capacity, alignment);
         }
-        const result = try Storage.init(allocator, output.byte_count, try external_alignment(image, .output, 0, output.byte_count));
-        return .{ .inputs = storage, .views = views, .output = result };
+        for (views, 0..) |*view, node|
+            view.* = .{ .bytes = storage[find(parents, node)].?.bytes };
+        return .{
+            .storage = storage,
+            .inputs = views,
+            .output = .{ .bytes = storage[find(parents, inputs.len)].?.bytes },
+        };
+    }
+
+    fn find(parents: []const usize, node: usize) usize {
+        var root = node;
+        while (parents[root] != root) root = parents[root];
+        return root;
+    }
+
+    fn merge(parents: []usize, anchor: *?usize, node: usize) void {
+        if (anchor.*) |first_node| {
+            parents[find(parents, node)] = find(parents, first_node);
+        } else anchor.* = node;
     }
 
     fn deinit(self: Bindings, allocator: std.mem.Allocator) void {
-        self.output.deinit(allocator);
-        for (self.inputs) |item| item.deinit(allocator);
-        allocator.free(self.views);
+        for (self.storage) |item| if (item) |owned| owned.deinit(allocator);
         allocator.free(self.inputs);
+        allocator.free(self.storage);
     }
 };
 
@@ -136,13 +221,13 @@ fn external_alignment(image: *const zc.x86_64.artifact.Image, direction: enum { 
         .external => |external| {
             const positions = if (direction == .input) external.inputs else external.outputs;
             for (positions) |index| if (index == position) {
-                if (bytes > size) return error.InterfaceMismatch;
-                alignment = @max(alignment, std.math.cast(usize, external.alignment) orelse return error.InvalidAlignment);
+                if (bytes > size) return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
+                alignment = @max(alignment, std.math.cast(usize, external.alignment) orelse return validation_error(error.InvalidAlignment, "external binding alignment must be a representable power of two"));
                 found = true;
             };
         },
     };
-    if (!found) return error.InterfaceMismatch;
+    if (!found) return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
     return alignment;
 }
 
@@ -248,21 +333,21 @@ pub const Callable = struct {
 
     /// Validates all inputs before copying bytes or entering retained code.
     pub fn call(self: *Callable, args: anytype) !Tensor {
-        if (comptime !tensor_tuple(@TypeOf(args))) return error.UnsupportedSignature;
+        if (comptime !tensor_tuple(@TypeOf(args))) return validation_error(error.UnsupportedSignature, "call requires a flat Tensor tuple");
         var flat: [meta.leaf_count(Tensor, @TypeOf(args))]Tensor = undefined;
         var index: usize = 0;
         meta.flatten(Tensor, @TypeOf(args), args, &flat, &index);
-        if (flat.len != self.inputs.len) return error.ArgumentCountMismatch;
+        if (flat.len != self.inputs.len) return validation_error(error.ArgumentCountMismatch, "call argument count disagrees with compiled inputs");
         const native = switch (self.state) {
             .native => |*native| native,
             .unprepared => {
-                if (self.run.failure) |failure| return failure.cause();
+                if (self.run.failure) |failure| return validation_error(failure.cause(), "retained CPU Run failed");
                 const root = try root_resolution(&self.run, self.demand.request);
                 return switch (root.resolution) {
-                    .unsupported => error.UnsupportedExecutable,
-                    .open => error.UnresolvedExecutable,
-                    .conflicted => error.ConflictedContract,
-                    .satisfied => error.UnfinishedExecutable,
+                    .unsupported => validation_error(error.UnsupportedExecutable, "terminal CPU resolution is unsupported"),
+                    .open => validation_error(error.UnresolvedExecutable, "terminal CPU resolution is open"),
+                    .conflicted => validation_error(error.ConflictedContract, "terminal CPU resolution is conflicted"),
+                    .satisfied => validation_error(error.UnfinishedExecutable, "terminal CPU resolution is satisfied"),
                 };
             },
         };
@@ -270,11 +355,12 @@ pub const Callable = struct {
         // Validate the whole tuple before the first byte copy
         for (flat, 0..) |arg, i| _ = try self.inputs[i].input_bytes(arg);
         for (flat, 0..) |arg, i|
-            @memcpy(bindings.inputs[i].bytes, try self.inputs[i].input_bytes(arg));
+            @memcpy(bindings.inputs[i].bytes[0..self.inputs[i].byte_count], try self.inputs[i].input_bytes(arg));
         var result = try Tensor.host(self.output.dtype, self.output.shape.const_slice(), .{ .alloc = self.allocator });
         errdefer result.deinit();
-        try native.prepared.run(bindings.views, &.{.{ .bytes = bindings.output.bytes }});
-        @memcpy(result.host_data_mut(), bindings.output.bytes);
+        native.prepared.run(bindings.inputs, &.{.{ .bytes = bindings.output.bytes }}) catch |err|
+            return validation_error(err, "native CPU invocation rejected");
+        @memcpy(result.host_data_mut(), bindings.output.bytes[0..self.output.byte_count]);
         return result;
     }
 
@@ -310,8 +396,8 @@ fn tensor_tuple(comptime T: type) bool {
 ///  and uses `Profile.exact_scalar` with per-input executable offers.
 ///  Tree and tensor-plan formations are disabled.
 pub fn compile(comptime func: anytype, allocator: std.mem.Allocator, io: std.Io, specs: anytype, comptime opts: trace.Options) !*Callable {
-    if (comptime !signature_supported(func, @TypeOf(specs))) return error.UnsupportedSignature;
-    if (!host_admitted(builtin.os.tag, builtin.cpu.arch)) return error.UnsupportedHost;
+    if (comptime !signature_supported(func, @TypeOf(specs))) return validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result");
+    if (!host_admitted(builtin.os.tag, builtin.cpu.arch)) return validation_error(error.UnsupportedHost, "compile requires Linux x86-64");
     const self = try allocator.create(Callable);
     errdefer allocator.destroy(self);
     self.* = .{
@@ -341,11 +427,11 @@ pub fn compile(comptime func: anytype, allocator: std.mem.Allocator, io: std.Io,
     self.loaded = try zc.program.load(&self.workspace.db, allocator, &self.source, self.compiler.authority);
     errdefer self.loaded.deinit();
     self.function = try find_function(self);
-    const function = self.source.get_function_by_id(self.function_id) orelse return error.MissingSource;
+    const function = self.source.get_function_by_id(self.function_id) orelse return validation_error(error.MissingSource, "traced entry function is absent from source");
     self.inputs = try allocator.alloc(Descriptor, function.params.len);
     errdefer allocator.free(self.inputs);
     for (function.params, self.inputs) |param, *descriptor| descriptor.* = try Descriptor.from_value(param);
-    if (function.returns.len != 1) return error.UnsupportedSignature;
+    if (function.returns.len != 1) return validation_error(error.UnsupportedSignature, "loaded function requires one Tensor result");
     self.output = try Descriptor.from_value(function.returns[0]);
     try verify_interface(self, function);
     self.demand = try self.composition.request(&self.compiler, self.function.subject, .{});
@@ -357,8 +443,8 @@ pub fn compile(comptime func: anytype, allocator: std.mem.Allocator, io: std.Io,
     const root = try root_resolution(&self.run, self.demand.request);
     if (root.resolution != .satisfied) return self;
     const products = root.resolution.satisfied.products;
-    if (products.len != 1) return error.ExpectedOneProduct;
-    const product = zc.record.typed_at(.pull_product, &self.workspace.db, products[0], .latest) orelse return error.MissingProduct;
+    if (products.len != 1) return validation_error(error.ExpectedOneProduct, "terminal CPU resolution requires one Product");
+    const product = zc.record.typed_at(.pull_product, &self.workspace.db, products[0], .latest) orelse return validation_error(error.MissingProduct, "selected CPU Product is absent from accepted state");
     self.state = .{ .native = .{
         .selected = products[0],
         .offered_contract = product.contract,
@@ -377,23 +463,23 @@ pub fn compile(comptime func: anytype, allocator: std.mem.Allocator, io: std.Io,
 
 fn root_resolution(run: *const zcf.pull.RunResult, request: Id) !*const zcf.pull.RootResolution {
     for (run.roots) |*root| if (root.request.eql(request)) return root;
-    return error.MissingRoot;
+    return validation_error(error.MissingRoot, "terminal Request is absent from retained Run roots");
 }
 
 fn find_function(self: *const Callable) !zc.program.LoadedFunction {
     for (self.loaded.functions) |function| {
-        const stored = zc.record.typed_at(.function, &self.workspace.db, function.record, .latest) orelse return error.MissingFunction;
+        const stored = zc.record.typed_at(.function, &self.workspace.db, function.record, .latest) orelse return validation_error(error.MissingFunction, "loaded source function is absent from accepted state");
         if (stored.source_id == @backingInt(self.function_id)) return function;
     }
-    return error.MissingFunction;
+    return validation_error(error.MissingFunction, "loaded source function is absent from accepted state");
 }
 
 fn verify_interface(self: *const Callable, function: pr.Function) !void {
     var projected = try zc.program.project(&self.workspace.db, self.allocator, self.loaded.root, self.loaded.cut, .{});
     defer projected.deinit();
-    const accepted = projected.get_function_by_id(self.function_id) orelse return error.InterfaceMismatch;
+    const accepted = projected.get_function_by_id(self.function_id) orelse return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
     if (accepted.params.len != function.params.len or accepted.returns.len != function.returns.len)
-        return error.InterfaceMismatch;
+        return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
     for (accepted.params, function.params) |stored, source| {
         try verify_value(stored, source);
     }
@@ -407,7 +493,7 @@ fn verify_value(stored: *const pr.Var, source: *const pr.Var) !void {
     const authored = try Descriptor.from_value(source);
     if (accepted.dtype != authored.dtype or
         !std.mem.eql(i64, accepted.shape.const_slice(), authored.shape.const_slice()))
-        return error.InterfaceMismatch;
+        return validation_error(error.InterfaceMismatch, "accepted image or source interface disagrees with compiled descriptors");
 }
 
 /// Exercises adapter buffer cleanup at every allocation boundary using a real
@@ -467,25 +553,25 @@ fn assert_typed_binding_refusals(callable: *Callable) !void {
     const args = try first.args();
     var wrong = args[0];
     wrong.dtype = .f64;
-    try std.testing.expectError(error.DTypeMismatch, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.DTypeMismatch, "call input dtype disagrees with compiled descriptor", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong = try Tensor.host(.f32, &.{ 1, 4 }, .{ .borrow = std.mem.sliceAsBytes(&first.a) });
-    try std.testing.expectError(error.ShapeMismatch, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.ShapeMismatch, "call input shape disagrees with compiled descriptor", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong = try Tensor.host(.f32, &.{ 2, 2 }, .{ .borrow = std.mem.sliceAsBytes(first.a[0..3]) });
-    try std.testing.expectError(error.BufferTooSmall, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.BufferTooSmall, "call input capacity is below the compiled byte count", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong = args[0];
     wrong.backing.host.dtype = .f64;
-    try std.testing.expectError(error.HostMetadataMismatch, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.HostMetadataMismatch, "call input host metadata disagrees with Tensor metadata", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong = args[0];
     wrong.backing.host.shape = .from_slice(&.{ 1, 4 });
-    try std.testing.expectError(error.HostMetadataMismatch, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.HostMetadataMismatch, "call input host metadata disagrees with Tensor metadata", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong = Tensor.abstract(.f32, &.{ 2, 2 });
-    try std.testing.expectError(error.UnsupportedBacking, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.UnsupportedBacking, "call input requires host backing", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     // admission rejects these tags before reading their payloads
     wrong.backing = .{ .device = undefined };
-    try std.testing.expectError(error.UnsupportedBacking, callable.call(.{ wrong, args[1], args[2] }));
+    try expect_validation_error(error.UnsupportedBacking, "call input requires host backing", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
     wrong.backing = .{ .traced = undefined };
-    try std.testing.expectError(error.UnsupportedBacking, callable.call(.{ wrong, args[1], args[2] }));
-    try std.testing.expectError(error.UnsupportedSignature, callable.call(.{.{args[0]}}));
+    try expect_validation_error(error.UnsupportedBacking, "call input requires host backing", Callable.call, .{ callable, .{ wrong, args[1], args[2] } });
+    try expect_validation_error(error.UnsupportedSignature, "call requires a flat Tensor tuple", Callable.call, .{ callable, .{.{args[0]}} });
     var result = try callable.call(args);
     defer result.deinit();
     try expect_result(first.expected, result);
@@ -562,10 +648,10 @@ test signature_supported {
     try std.testing.expect(!signature_supported(non_tensor, @TypeOf(.{@as(i32, 0)})));
     try std.testing.expect(!signature_supported(multiple, @TypeOf(.{test_specs(.f32)[0]})));
     try std.testing.expect(!signature_supported(generic, @TypeOf(.{test_specs(.f32)[0]})));
-    try std.testing.expectError(error.UnsupportedSignature, compile(nested, allocator, io, .{.{ .a = test_specs(.f32)[0] }}, .{}));
-    try std.testing.expectError(error.UnsupportedSignature, compile(non_tensor, allocator, io, .{@as(i32, 0)}, .{}));
-    try std.testing.expectError(error.UnsupportedSignature, compile(multiple, allocator, io, .{test_specs(.f32)[0]}, .{}));
-    try std.testing.expectError(error.UnsupportedSignature, compile(generic, allocator, io, .{test_specs(.f32)[0]}, .{}));
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ nested, allocator, io, .{.{ .a = test_specs(.f32)[0] }}, .{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ non_tensor, allocator, io, .{@as(i32, 0)}, .{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ multiple, allocator, io, .{test_specs(.f32)[0]}, .{} });
+    try expect_validation_error(error.UnsupportedSignature, "compile requires concrete Tensor parameters and one Tensor result", compile, .{ generic, allocator, io, .{test_specs(.f32)[0]}, .{} });
 }
 
 test "Callable.inspect keeps the native image, mapping, and entry across two calls" {
@@ -605,8 +691,8 @@ test "Callable.call validates the whole tuple before copying or entering native 
     defer callable.deinit();
     try assert_typed_binding_refusals(callable);
     const original = try first.args();
-    try std.testing.expectError(error.UnsupportedSignature, callable.call(.{ .a = original[0], .b = original[1], .c = original[2] }));
-    try std.testing.expectError(error.ArgumentCountMismatch, callable.call(.{original[0]}));
+    try expect_validation_error(error.UnsupportedSignature, "call requires a flat Tensor tuple", Callable.call, .{ callable, .{ .a = original[0], .b = original[1], .c = original[2] } });
+    try expect_validation_error(error.ArgumentCountMismatch, "call argument count disagrees with compiled inputs", Callable.call, .{ callable, .{original[0]} });
     const bindings = &callable.state.native.bindings;
     const snapshot = try std.testing.allocator.dupe(u8, bindings.inputs[0].bytes);
     defer std.testing.allocator.free(snapshot);
@@ -614,7 +700,7 @@ test "Callable.call validates the whole tuple before copying or entering native 
     const changed = try second.args();
     var invalid = changed[2];
     invalid.dtype = .f64;
-    try std.testing.expectError(error.DTypeMismatch, callable.call(.{ changed[0], changed[1], invalid }));
+    try expect_validation_error(error.DTypeMismatch, "call input dtype disagrees with compiled descriptor", Callable.call, .{ callable, .{ changed[0], changed[1], invalid } });
     try std.testing.expectEqualSlices(u8, snapshot, bindings.inputs[0].bytes);
     for (bindings.output.bytes) |byte| try std.testing.expectEqual(@as(u8, 0xa5), byte);
 }
@@ -655,10 +741,15 @@ test "Callable.call rejects changed MXCSR controls before native entry" {
         const freed = accounting.freed_bytes;
         @memset(callable.state.native.bindings.output.bytes, 0xa5);
         write_mxcsr(controls);
+        std.debug.assert(TestDiagnostics.expected == null);
+        TestDiagnostics.expected = .{ .cause = error.FloatingPointEnvironmentMismatch, .context = "native CPU invocation rejected" };
+        defer TestDiagnostics.expected = null;
         const outcome = callable.call(args);
         const after = try runtime.read_mxcsr();
         write_mxcsr(runtime.required_controls);
         try std.testing.expectError(error.FloatingPointEnvironmentMismatch, outcome);
+        try std.testing.expectEqual(@as(usize, 1), TestDiagnostics.expected.?.count);
+        TestDiagnostics.expected = null;
         try std.testing.expectEqual(controls, after);
         try std.testing.expect(accounting.allocated_bytes > allocated);
         try std.testing.expectEqual(accounting.allocated_bytes - allocated, accounting.freed_bytes - freed);
@@ -684,7 +775,7 @@ test "compile retains an unprepared callable for an unsupported f64 source" {
     try std.testing.expect(view.native == null);
     const root = try root_resolution(view.run, view.request);
     try std.testing.expect(root.resolution == .unsupported);
-    try std.testing.expectError(error.UnsupportedExecutable, callable.call(try first.args()));
+    try expect_validation_error(error.UnsupportedExecutable, "terminal CPU resolution is unsupported", Callable.call, .{ callable, try first.args() });
 }
 
 test "Callable.repeat_demand returns a caller-owned Run with the same Contract and Request" {
@@ -763,4 +854,78 @@ fn assert_numerical_records(view: anytype) !void {
         }
         try std.testing.expect(linked);
     }
+}
+
+fn identity(value: Tensor) Tensor {
+    return value;
+}
+
+test "Callable.call shares identity bindings and returns independent results that outlive teardown" {
+    var accounting = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    const callable = try compile(identity, accounting.allocator(), std.testing.io, .{test_specs(.f32)[0]}, .{});
+    var destroyed = false;
+    defer if (!destroyed) callable.deinit();
+    const before = callable.inspect().native.?;
+    const bindings = &callable.state.native.bindings;
+    try std.testing.expect(bindings.inputs[0].bytes.ptr == bindings.output.bytes.ptr);
+    try std.testing.expectEqual(bindings.inputs[0].bytes.len, bindings.output.bytes.len);
+    try check_binding_allocation_failures(callable);
+    const a = (try first.args())[0];
+    const b = (try second.args())[0];
+    accounting.fail_index = accounting.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, callable.call(.{a}));
+    accounting.fail_index = std.math.maxInt(usize);
+    var result_a = try callable.call(.{a});
+    defer result_a.deinit();
+    var result_b = try callable.call(.{b});
+    defer result_b.deinit();
+    try expect_result(first.a, result_a);
+    try expect_result(second.a, result_b);
+    try std.testing.expect(result_a.host_data().ptr != result_b.host_data().ptr);
+    try std.testing.expect(result_a.host_data().ptr != a.host_data().ptr);
+    try std.testing.expect(result_b.host_data().ptr != b.host_data().ptr);
+    try std.testing.expect(result_b.host_data().ptr != bindings.output.bytes.ptr);
+    const after = callable.inspect().native.?;
+    try std.testing.expect(before.image == after.image);
+    try std.testing.expectEqual(before.mapping, after.mapping);
+    try std.testing.expectEqual(before.entry, after.entry);
+    callable.deinit();
+    destroyed = true;
+    try expect_result(first.a, result_a);
+    try expect_result(second.a, result_b);
+    try std.testing.expectEqualSlices(f32, &first.a, a.as_const_slice(f32));
+    try std.testing.expectEqualSlices(f32, &second.a, b.as_const_slice(f32));
+}
+
+test "Callable.Bindings merges transitive external aliases with class capacity and alignment" {
+    const image = zc.x86_64.artifact.Image{
+        .input_count = 2,
+        .output_count = 1,
+        .allocations = &.{},
+        .buffers = &.{
+            .{ .storage = .{ .external = .{ .inputs = &.{0}, .outputs = &.{0}, .alignment = 16 } } },
+            .{ .storage = .{ .external = .{ .inputs = &.{1}, .outputs = &.{0}, .alignment = 64 } } },
+        },
+        .buffer_bytes = &.{ 4, 8 },
+        .code = &.{},
+    };
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator, executable: *const zc.x86_64.artifact.Image) !void {
+            const inputs = [_]Descriptor{ try Descriptor.init(.f32, &.{1}), try Descriptor.init(.f32, &.{2}) };
+            const bindings = try Bindings.init(allocator, executable, &inputs, inputs[1]);
+            defer bindings.deinit(allocator);
+            try std.testing.expect(bindings.inputs[0].bytes.ptr == bindings.output.bytes.ptr);
+            try std.testing.expect(bindings.inputs[1].bytes.ptr == bindings.output.bytes.ptr);
+            try std.testing.expectEqual(@as(usize, 8), bindings.output.bytes.len);
+            try std.testing.expectEqual(@as(usize, 8), bindings.inputs[0].bytes.len);
+            try std.testing.expectEqual(@as(usize, 8), bindings.inputs[1].bytes.len);
+            try std.testing.expectEqual(@as(usize, 0), @intFromPtr(bindings.output.bytes.ptr) % 64);
+            var owned_count: usize = 0;
+            for (bindings.storage) |storage| if (storage != null) {
+                owned_count += 1;
+            };
+            try std.testing.expectEqual(@as(usize, 1), owned_count);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{&image});
 }
